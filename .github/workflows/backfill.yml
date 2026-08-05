@@ -1,0 +1,65 @@
+name: Backfill carriere API
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_season_start:
+        description: "Anno iniziale stagione corrente"
+        required: true
+        default: "2026"
+      history_start:
+        description: "Prima stagione storica"
+        required: true
+        default: "2021"
+      history_end:
+        description: "Ultima stagione storica"
+        required: true
+        default: "2025"
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    env:
+      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+      TARGET_SEASON_START: ${{ inputs.target_season_start || '2026' }}
+      HISTORY_START: ${{ inputs.history_start || '2021' }}
+      HISTORY_END: ${{ inputs.history_end || '2025' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Ripristina cache API e warehouse
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/raw/api-football
+            data/warehouse
+          key: fantabuddy-data-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            fantabuddy-data-${{ github.ref_name }}-
+      - name: Verifica warehouse iniziale
+        run: test -f data/warehouse/fantabuddy.duckdb
+      - name: Completa coorte quinquennale
+        run: >-
+          uv run fantabuddy backfill-careers
+          --target-season-start "$TARGET_SEASON_START"
+          --history-start "$HISTORY_START"
+          --history-end "$HISTORY_END"
+          --cohort serie-a-five-year
+          --daily-reserve 250
+          --workers 4
+      - name: Riconcilia mapping storici
+        run: uv run fantabuddy reconcile-all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fantabuddy-backfill-${{ github.run_id }}
+          path: data/warehouse/fantabuddy.duckdb
+          retention-days: 30

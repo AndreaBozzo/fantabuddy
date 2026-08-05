@@ -1,0 +1,29 @@
+league:
+  name: "Classic 10 - 1000"
+  teams: 10
+  budget: 1000
+  roster:
+    P: 3
+    D: 8
+    C: 8
+    A: 6
+  role_budget_shares:
+    P: 0.08
+    D: 0.16
+    C: 0.28
+    A: 0.48
+  player_price_caps:
+    P: 90
+    D: 130
+    C: 280
+    A: 500
+  scoring:
+    goal: 3.0
+    assist: 1.0
+    yellow_card: -0.5
+    red_card: -1.0
+    own_goal: -2.0
+    penalty_missed: -3.0
+    penalty_saved: 3.0
+    goal_conceded: -1.0
+  price_curve_gamma: 1.15

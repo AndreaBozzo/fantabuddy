@@ -1,0 +1,90 @@
+name: Snapshot Fantabuddy
+
+on:
+  workflow_dispatch:
+    inputs:
+      listoni_release_tag:
+        description: "Release privata contenente gli XLSX"
+        required: true
+      season:
+        description: "Stagione, es. 2026/27"
+        required: true
+        default: "2026/27"
+      as_of:
+        description: "Data snapshot YYYY-MM-DD"
+        required: true
+      snapshot_kind:
+        description: "preseason, september o benchmark"
+        required: true
+        default: "preseason"
+      api_seasons:
+        description: "Opzionale: anni API separati da virgola"
+        required: false
+      refresh_current:
+        description: "Aggiorna statistiche, rose e infortuni ignorando la cache"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    env:
+      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Ripristina cache API e warehouse
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/raw/api-football
+            data/warehouse
+          key: fantabuddy-data-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            fantabuddy-data-${{ github.ref_name }}-
+      - name: Scarica listoni dalla release privata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ inputs.listoni_release_tag }}" --dir .input --pattern "*.xlsx"
+      - name: Importa listoni
+        shell: pwsh
+        run: uv run fantabuddy import-listoni (Get-ChildItem .input -Filter *.xlsx).FullName
+      - name: Acquisisci rose e infortuni correnti dalla cache
+        if: ${{ inputs.api_seasons != '' && inputs.refresh_current == false }}
+        env:
+          TARGET_SEASON: ${{ inputs.season }}
+        run: |
+          uv run fantabuddy ingest-squads --season-start "${TARGET_SEASON%%/*}" --daily-reserve 10
+          uv run fantabuddy ingest-injuries --season-start "${TARGET_SEASON%%/*}" --daily-reserve 10
+      - name: Aggiorna rose e infortuni correnti
+        if: ${{ inputs.api_seasons != '' && inputs.refresh_current }}
+        env:
+          TARGET_SEASON: ${{ inputs.season }}
+        run: |
+          uv run fantabuddy ingest-squads --season-start "${TARGET_SEASON%%/*}" --daily-reserve 10 --refresh
+          uv run fantabuddy ingest-injuries --season-start "${TARGET_SEASON%%/*}" --daily-reserve 10 --refresh
+      - name: Acquisisci statistiche API rispettando la riserva
+        if: ${{ inputs.api_seasons != '' && inputs.refresh_current == false }}
+        run: uv run fantabuddy ingest-api --seasons "${{ inputs.api_seasons }}" --daily-reserve 10 --pause-ok
+      - name: Aggiorna statistiche API indicate
+        if: ${{ inputs.api_seasons != '' && inputs.refresh_current }}
+        run: uv run fantabuddy ingest-api --seasons "${{ inputs.api_seasons }}" --daily-reserve 10 --refresh --pause-ok
+      - name: Riconcilia stagioni
+        run: uv run fantabuddy reconcile-all
+      - name: Crea snapshot
+        run: uv run fantabuddy build --season "${{ inputs.season }}" --as-of "${{ inputs.as_of }}" --kind "${{ inputs.snapshot_kind }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fantabuddy-${{ inputs.season }}-${{ inputs.as_of }}
+          path: |
+            outputs/
+            data/warehouse/fantabuddy.duckdb
+          retention-days: 90
