@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+      WAREHOUSE_SEED_TAG: warehouse-seed-2026-08-06
       TARGET_SEASON_START: ${{ inputs.target_season_start || '2026' }}
       HISTORY_START: ${{ inputs.history_start || '2021' }}
       HISTORY_END: ${{ inputs.history_end || '2025' }}
@@ -45,8 +46,24 @@ jobs:
           key: fantabuddy-data-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             fantabuddy-data-${{ github.ref_name }}-
+      - name: Bootstrap warehouse se la cache è vuota
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f data/warehouse/fantabuddy.duckdb ]; then
+            mkdir -p data/warehouse
+            gh release download "$WAREHOUSE_SEED_TAG" \
+              --dir data/warehouse \
+              --pattern "fantabuddy.duckdb"
+          fi
+      - name: Verifica secret API-Football
+        run: |
+          if [ -z "${API_FOOTBALL_KEY:-}" ]; then
+            echo "::error::Configura il repository secret API_FOOTBALL_KEY"
+            exit 1
+          fi
       - name: Verifica warehouse iniziale
-        run: test -f data/warehouse/fantabuddy.duckdb
+        run: test -s data/warehouse/fantabuddy.duckdb
       - name: Completa coorte quinquennale
         run: >-
           uv run fantabuddy backfill-careers
