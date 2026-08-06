@@ -119,6 +119,31 @@ CREATE TABLE IF NOT EXISTS api_player_profiles (
     updated_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS api_player_transfers (
+    api_player_id INTEGER NOT NULL,
+    player_name VARCHAR NOT NULL,
+    transfer_date DATE NOT NULL,
+    transfer_type VARCHAR NOT NULL,
+    team_in_id INTEGER NOT NULL,
+    team_in_name VARCHAR NOT NULL,
+    team_out_id INTEGER NOT NULL,
+    team_out_name VARCHAR NOT NULL,
+    provider_updated_at TIMESTAMPTZ,
+    observed_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (
+      api_player_id, transfer_date, transfer_type, team_in_id, team_out_id
+    )
+);
+
+CREATE TABLE IF NOT EXISTS api_player_sidelined (
+    episode_id VARCHAR PRIMARY KEY,
+    api_player_id INTEGER NOT NULL,
+    sidelined_type VARCHAR NOT NULL,
+    start_date DATE NOT NULL,
+    end_date DATE,
+    observed_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS api_injuries (
     api_player_id INTEGER NOT NULL,
     season_start INTEGER NOT NULL,
@@ -278,6 +303,67 @@ CREATE TABLE IF NOT EXISTS api_fixture_ingestion_status (
     detail VARCHAR,
     updated_at TIMESTAMPTZ NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS ml_player_fixture_features (
+    fixture_id INTEGER NOT NULL,
+    api_player_id INTEGER NOT NULL,
+    league_id INTEGER NOT NULL,
+    season_start INTEGER NOT NULL,
+    feature_as_of TIMESTAMPTZ NOT NULL,
+    team_id INTEGER NOT NULL,
+    opponent_team_id INTEGER NOT NULL,
+    is_home BOOLEAN NOT NULL,
+    previous_team_id INTEGER,
+    previous_position VARCHAR,
+    history_squad_matches INTEGER NOT NULL,
+    history_appearances INTEGER NOT NULL,
+    history_starts INTEGER NOT NULL,
+    days_since_last_appearance INTEGER,
+    minutes_avg_3 DOUBLE,
+    start_share_3 DOUBLE,
+    rating_avg_3 DOUBLE,
+    goals_per90_3 DOUBLE,
+    assists_per90_3 DOUBLE,
+    shots_on_per90_3 DOUBLE,
+    key_passes_per90_3 DOUBLE,
+    cards_per90_3 DOUBLE,
+    minutes_avg_5 DOUBLE,
+    start_share_5 DOUBLE,
+    rating_avg_5 DOUBLE,
+    goals_per90_5 DOUBLE,
+    assists_per90_5 DOUBLE,
+    shots_on_per90_5 DOUBLE,
+    key_passes_per90_5 DOUBLE,
+    cards_per90_5 DOUBLE,
+    minutes_avg_10 DOUBLE,
+    start_share_10 DOUBLE,
+    rating_avg_10 DOUBLE,
+    goals_per90_10 DOUBLE,
+    assists_per90_10 DOUBLE,
+    shots_on_per90_10 DOUBLE,
+    key_passes_per90_10 DOUBLE,
+    cards_per90_10 DOUBLE,
+    team_points_avg_5 DOUBLE,
+    team_goals_for_avg_5 DOUBLE,
+    team_goals_against_avg_5 DOUBLE,
+    opponent_points_avg_5 DOUBLE,
+    opponent_goals_for_avg_5 DOUBLE,
+    opponent_goals_against_avg_5 DOUBLE,
+    label_started BOOLEAN NOT NULL,
+    label_minutes INTEGER NOT NULL,
+    label_rating DOUBLE,
+    label_goals INTEGER NOT NULL,
+    label_assists INTEGER NOT NULL,
+    label_shots_on INTEGER NOT NULL,
+    label_key_passes INTEGER NOT NULL,
+    label_yellow_cards INTEGER NOT NULL,
+    label_red_cards INTEGER NOT NULL,
+    built_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (fixture_id, api_player_id)
+);
+
+CREATE OR REPLACE VIEW ml_serie_a_player_fixture_training AS
+SELECT * FROM ml_player_fixture_features WHERE league_id = 135;
 
 CREATE TABLE IF NOT EXISTS provider_player_mappings (
     fantacalcio_id INTEGER NOT NULL,

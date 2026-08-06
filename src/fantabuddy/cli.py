@@ -15,6 +15,7 @@ from fantabuddy.config import load_league_config
 from fantabuddy.curation import import_overrides_csv
 from fantabuddy.db import database, ingest_listone, listone_summary
 from fantabuddy.excel import read_listone
+from fantabuddy.features import materialize_player_fixture_features
 from fantabuddy.mapping import export_pending_mappings, import_mapping_csv, reconcile_season
 from fantabuddy.provider import (
     SERIE_A_LEAGUE_ID,
@@ -25,7 +26,9 @@ from fantabuddy.provider import (
     ingest_fixture_history,
     ingest_injuries,
     ingest_player_season,
+    ingest_sidelined_history,
     ingest_squads,
+    ingest_team_transfers,
     search_player_profiles,
 )
 from fantabuddy.report import export_build
@@ -171,6 +174,12 @@ def ingest_fixtures(
     include_unfinished: Annotated[
         bool, typer.Option(help="Acquisisce dettagli anche per fixture non concluse")
     ] = False,
+    serie_a_team_scope: Annotated[
+        bool,
+        typer.Option(
+            help="Limita i dettagli alle squadre presenti in Serie A nella stessa stagione"
+        ),
+    ] = False,
     refresh: Annotated[
         bool, typer.Option(help="Ignora la cache e riacquisisce anche fixture complete")
     ] = False,
@@ -187,6 +196,18 @@ def ingest_fixtures(
         client.status()
         for season_start in season_values:
             try:
+                team_ids: list[int] | None = None
+                if serie_a_team_scope:
+                    rows = connection.execute(
+                        """
+                        SELECT DISTINCT team_id FROM api_player_season_stats
+                        WHERE league_id = ? AND season_start = ?
+                        UNION
+                        SELECT DISTINCT team_id FROM api_squad_players WHERE season_start = ?
+                        """,
+                        [SERIE_A_LEAGUE_ID, season_start, season_start],
+                    ).fetchall()
+                    team_ids = [int(row[0]) for row in rows]
                 summary = ingest_fixture_history(
                     connection,
                     client,
@@ -195,6 +216,7 @@ def ingest_fixtures(
                     refresh=refresh,
                     completed_only=not include_unfinished,
                     batch_size=batch_size,
+                    team_ids=team_ids,
                 )
                 typer.echo(json.dumps(summary, indent=2))
             except DailyQuotaGuard as exc:
@@ -205,6 +227,15 @@ def ingest_fixtures(
             except ApiFootballError as exc:
                 typer.echo(f"ACQUISIZIONE FIXTURE INCOMPLETA: {exc}", err=True)
                 raise typer.Exit(code=78) from exc
+
+
+@app.command("build-fixture-features")
+def build_fixture_features(
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+) -> None:
+    """Materializza feature pre-partita e label separate senza leakage temporale."""
+    with database(db_path) as connection:
+        typer.echo(json.dumps(materialize_player_fixture_features(connection), indent=2))
 
 
 @app.command("reconcile")
@@ -283,6 +314,60 @@ def ingest_squad_data(
     ):
         client.status()
         summary = ingest_squads(connection, client, season_start, refresh=refresh)
+        typer.echo(json.dumps(summary, indent=2))
+
+
+@app.command("ingest-transfers")
+def ingest_transfer_data(
+    season_start: Annotated[int, typer.Option("--season-start", min=2000)],
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    cache_dir: Annotated[Path, typer.Option("--cache-dir")] = DEFAULT_CACHE,
+    daily_reserve: Annotated[int, typer.Option("--daily-reserve", min=1)] = 100,
+    refresh: Annotated[bool, typer.Option(help="Aggiorna ignorando la cache")] = False,
+) -> None:
+    """Acquisisce lo storico trasferimenti delle squadre presenti nel warehouse."""
+    with (
+        database(db_path) as connection,
+        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
+    ):
+        client.status()
+        summary = ingest_team_transfers(
+            connection, client, season_start, refresh=refresh
+        )
+        typer.echo(json.dumps(summary, indent=2))
+
+
+@app.command("ingest-sidelined")
+def ingest_sidelined_data(
+    season_start: Annotated[int, typer.Option("--season-start", min=2000)],
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    cache_dir: Annotated[Path, typer.Option("--cache-dir")] = DEFAULT_CACHE,
+    daily_reserve: Annotated[int, typer.Option("--daily-reserve", min=1)] = 100,
+    batch_size: Annotated[int, typer.Option("--batch-size", min=1, max=20)] = 20,
+    refresh: Annotated[bool, typer.Option(help="Aggiorna ignorando la cache")] = False,
+) -> None:
+    """Acquisisce episodi storici di indisponibilità per la rosa della stagione."""
+    with (
+        database(db_path) as connection,
+        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
+    ):
+        client.status()
+        rows = connection.execute(
+            """
+            SELECT DISTINCT api_player_id FROM api_squad_players WHERE season_start = ?
+            UNION
+            SELECT DISTINCT api_player_id FROM provider_player_mappings
+            WHERE season = ? AND status = 'accepted' AND api_player_id > 0
+            """,
+            [season_start, f"{season_start}/{str(season_start + 1)[-2:]}"],
+        ).fetchall()
+        summary = ingest_sidelined_history(
+            connection,
+            client,
+            [int(row[0]) for row in rows],
+            batch_size=batch_size,
+            refresh=refresh,
+        )
         typer.echo(json.dumps(summary, indent=2))
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -11,7 +12,9 @@ from fantabuddy.provider import (
     ApiFootballClient,
     DailyQuotaGuard,
     ingest_fixture_history,
+    ingest_sidelined_history,
     ingest_squads,
+    ingest_team_transfers,
 )
 
 
@@ -337,3 +340,109 @@ def test_fixture_history_falls_back_to_per_fixture_endpoints(
     assert summary["network_calls"] == 6
     assert summary["fallback_calls"] == 4
     assert source == ("complete", "per_fixture")
+
+
+def test_fixture_history_can_scope_details_to_selected_teams(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("fantabuddy.provider.time.sleep", lambda _: None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/status":
+            return httpx.Response(200, json=_status())
+        assert request.url.path == "/fixtures"
+        assert request.url.params.get("league") == "135"
+        return httpx.Response(200, json=_api_body([_fixture_entry(embedded=False)]))
+
+    with (
+        database(tmp_path / "db.duckdb") as connection,
+        ApiFootballClient(
+            tmp_path / "cache", api_key="test-key", transport=httpx.MockTransport(handler)
+        ) as client,
+    ):
+        summary = ingest_fixture_history(connection, client, 2025, team_ids=[999])
+        fixtures = connection.execute("SELECT count(*) FROM api_fixtures").fetchone()[0]
+        complete = connection.execute(
+            "SELECT count(*) FROM api_fixture_ingestion_status"
+        ).fetchone()[0]
+
+    assert summary["fixtures_discovered"] == 1
+    assert summary["fixtures_eligible"] == 0
+    assert summary["team_scope"] == 1
+    assert summary["network_calls"] == 1
+    assert fixtures == 1
+    assert complete == 0
+
+
+def test_transfer_and_sidelined_context_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("fantabuddy.provider.time.sleep", lambda _: None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/status":
+            return httpx.Response(200, json=_status())
+        if request.url.path == "/transfers":
+            return httpx.Response(
+                200,
+                json=_api_body(
+                    [
+                        {
+                            "player": {"id": 99, "name": "Test Player"},
+                            "update": "2026-08-01T00:00:00+00:00",
+                            "transfers": [
+                                {
+                                    "date": "2026-07-01",
+                                    "type": "Permanent",
+                                    "teams": {
+                                        "in": {"id": 10, "name": "Inter"},
+                                        "out": {"id": 20, "name": "Torino"},
+                                    },
+                                }
+                            ],
+                        }
+                    ]
+                ),
+            )
+        assert request.url.path == "/sidelined"
+        return httpx.Response(
+            200,
+            json=_api_body(
+                [
+                    {
+                        "id": 99,
+                        "sidelined": [
+                            {"type": "Muscle Injury", "start": "2025-01-01", "end": None}
+                        ],
+                    },
+                    {"id": 100, "sidelined": []},
+                ]
+            ),
+        )
+
+    with (
+        database(tmp_path / "db.duckdb") as connection,
+        ApiFootballClient(
+            tmp_path / "cache", api_key="test-key", transport=httpx.MockTransport(handler)
+        ) as client,
+    ):
+        transfers = ingest_team_transfers(connection, client, 2026, team_ids=[10])
+        cached_transfers = ingest_team_transfers(connection, client, 2026, team_ids=[10])
+        sidelined = ingest_sidelined_history(connection, client, [99, 100])
+        cached_sidelined = ingest_sidelined_history(connection, client, [99, 100])
+        transfer_row = connection.execute(
+            "SELECT api_player_id, transfer_type, team_in_id, team_out_id FROM api_player_transfers"
+        ).fetchone()
+        sidelined_row = connection.execute(
+            "SELECT api_player_id, sidelined_type, start_date, end_date FROM api_player_sidelined"
+        ).fetchone()
+
+    assert transfers["network_calls"] == 1
+    assert cached_transfers["network_calls"] == 0
+    assert transfers["stored_rows"] == cached_transfers["stored_rows"] == 1
+    assert transfer_row == (99, "Permanent", 10, 20)
+    assert sidelined["network_calls"] == 1
+    assert cached_sidelined["network_calls"] == 0
+    assert sidelined["stored_rows"] == cached_sidelined["stored_rows"] == 1
+    assert sidelined_row[:3] == (99, "Muscle Injury", date(2025, 1, 1))
+    assert sidelined_row[3] is None

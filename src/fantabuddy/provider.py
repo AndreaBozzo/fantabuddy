@@ -716,6 +716,26 @@ FIXTURE_INGESTION_STATUS_COLUMNS = (
     "detail",
     "updated_at",
 )
+PLAYER_TRANSFER_COLUMNS = (
+    "api_player_id",
+    "player_name",
+    "transfer_date",
+    "transfer_type",
+    "team_in_id",
+    "team_in_name",
+    "team_out_id",
+    "team_out_name",
+    "provider_updated_at",
+    "observed_at",
+)
+PLAYER_SIDELINED_COLUMNS = (
+    "episode_id",
+    "api_player_id",
+    "sidelined_type",
+    "start_date",
+    "end_date",
+    "observed_at",
+)
 
 
 def _bulk_insert(
@@ -1071,6 +1091,7 @@ def ingest_fixture_history(
     refresh: bool = False,
     completed_only: bool = True,
     batch_size: int = 20,
+    team_ids: list[int] | None = None,
 ) -> dict[str, int]:
     """Acquisisce calendario e dettagli partita, riprendendo per fixture dalla cache."""
     if not 1 <= batch_size <= 20:
@@ -1093,12 +1114,22 @@ def ingest_fixture_history(
         [normalize_fixture_entry(entry, season_start, league_id) for entry in fixture_entries],
         replace=True,
     )
+    team_scope = set(team_ids or [])
     candidates = [
         entry
         for entry in fixture_entries
-        if not completed_only
-        or str(((entry.get("fixture") or {}).get("status") or {}).get("short") or "")
-        in COMPLETED_FIXTURE_STATUSES
+        if (
+            not completed_only
+            or str(((entry.get("fixture") or {}).get("status") or {}).get("short") or "")
+            in COMPLETED_FIXTURE_STATUSES
+        )
+        and (
+            not team_scope
+            or _int_or_none(((entry.get("teams") or {}).get("home") or {}).get("id"))
+            in team_scope
+            or _int_or_none(((entry.get("teams") or {}).get("away") or {}).get("id"))
+            in team_scope
+        )
     ]
     completed_ids = {
         int(row[0])
@@ -1121,6 +1152,16 @@ def ingest_fixture_history(
     batch_calls = 0
     fallback_calls = 0
 
+    season_bundles: list[
+        tuple[
+            int,
+            str,
+            list[dict[str, Any]],
+            list[dict[str, Any]],
+            list[dict[str, Any]],
+            list[dict[str, Any]],
+        ]
+    ] = []
     for offset in range(0, len(pending_ids), batch_size):
         fixture_ids = pending_ids[offset : offset + batch_size]
         batch_entries: dict[int, dict[str, Any]] = {}
@@ -1223,26 +1264,177 @@ def ingest_fixture_history(
                 ],
             )
             raise
-        batch_totals = _persist_fixture_batch(
+        season_bundles.extend(bundles)
+
+    if season_bundles:
+        season_totals = _persist_fixture_batch(
             connection,
             league_id=league_id,
             season_start=season_start,
-            bundles=bundles,
+            bundles=season_bundles,
         )
-        for key, count in batch_totals.items():
+        for key, count in season_totals.items():
             totals[key] += count
-        completed_now += len(bundles)
+        completed_now += len(season_bundles)
 
     return {
         "season": season_start,
         "fixtures_discovered": len(fixture_entries),
         "fixtures_eligible": len(candidate_ids),
+        "team_scope": len(team_scope),
         "already_complete": 0 if refresh else len(set(candidate_ids) & completed_ids),
         "completed_now": completed_now,
         "network_calls": network_calls,
         "batch_calls": batch_calls,
         "fallback_calls": fallback_calls,
         **totals,
+    }
+
+
+def normalize_transfer_entries(entries: list[dict[str, Any]]) -> list[tuple[object, ...]]:
+    observed_at = datetime.now(tz=UTC)
+    unique: dict[tuple[object, ...], tuple[object, ...]] = {}
+    for entry in entries:
+        player = entry.get("player") or {}
+        if not player.get("id"):
+            continue
+        for transfer in entry.get("transfers") or []:
+            teams = transfer.get("teams") or {}
+            team_in = teams.get("in") or {}
+            team_out = teams.get("out") or {}
+            if not transfer.get("date") or not team_in.get("id") or not team_out.get("id"):
+                continue
+            row = (
+                int(player["id"]),
+                str(player.get("name") or ""),
+                transfer["date"],
+                str(transfer.get("type") or "unknown"),
+                int(team_in["id"]),
+                str(team_in.get("name") or ""),
+                int(team_out["id"]),
+                str(team_out.get("name") or ""),
+                entry.get("update"),
+                observed_at,
+            )
+            unique[(row[0], row[2], row[3], row[4], row[6])] = row
+    return list(unique.values())
+
+
+def ingest_team_transfers(
+    connection: duckdb.DuckDBPyConnection,
+    client: ApiFootballClient,
+    season_start: int,
+    *,
+    team_ids: list[int] | None = None,
+    refresh: bool = False,
+) -> dict[str, int]:
+    if team_ids is None:
+        team_ids = [
+            int(row[0])
+            for row in connection.execute(
+                "SELECT DISTINCT team_id FROM api_squad_players WHERE season_start = ?",
+                [season_start],
+            ).fetchall()
+        ]
+    network_calls = 0
+    normalized_rows = 0
+    for team_id in sorted(set(team_ids)):
+        params: dict[str, object] = {"team": team_id}
+        body, cache_path, cached = client.get("/transfers", params, refresh=refresh)
+        network_calls += int(not cached)
+        record_raw_response(
+            connection,
+            endpoint="/transfers",
+            params=params,
+            body=body,
+            cache_path=cache_path,
+        )
+        rows = normalize_transfer_entries(list(body.get("response") or []))
+        _bulk_insert(
+            connection,
+            "api_player_transfers",
+            PLAYER_TRANSFER_COLUMNS,
+            rows,
+            replace=True,
+        )
+        normalized_rows += len(rows)
+    stored_row = connection.execute("SELECT count(*) FROM api_player_transfers").fetchone()
+    return {
+        "season": season_start,
+        "teams": len(set(team_ids)),
+        "normalized_rows": normalized_rows,
+        "stored_rows": int(stored_row[0]) if stored_row else 0,
+        "network_calls": network_calls,
+    }
+
+
+def normalize_sidelined_entries(entries: list[dict[str, Any]]) -> list[tuple[object, ...]]:
+    observed_at = datetime.now(tz=UTC)
+    rows: list[tuple[object, ...]] = []
+    for entry in entries:
+        player_id = _int_or_none(entry.get("id"))
+        if player_id is None:
+            continue
+        for episode in entry.get("sidelined") or []:
+            episode_type = str(episode.get("type") or "unknown")
+            start = episode.get("start")
+            end = episode.get("end")
+            if not start:
+                continue
+            episode_id = hashlib.sha256(
+                f"{player_id}|{episode_type}|{start}|{end or ''}".encode()
+            ).hexdigest()
+            rows.append((episode_id, player_id, episode_type, start, end, observed_at))
+    return rows
+
+
+def ingest_sidelined_history(
+    connection: duckdb.DuckDBPyConnection,
+    client: ApiFootballClient,
+    player_ids: list[int],
+    *,
+    batch_size: int = 20,
+    refresh: bool = False,
+) -> dict[str, int]:
+    if not 1 <= batch_size <= 20:
+        raise ValueError("batch_size deve essere compreso tra 1 e 20")
+    unique_ids = sorted({player_id for player_id in player_ids if player_id > 0})
+    network_calls = 0
+    normalized_rows = 0
+    players_returned: set[int] = set()
+    for offset in range(0, len(unique_ids), batch_size):
+        chunk = unique_ids[offset : offset + batch_size]
+        params: dict[str, object] = {"players": "-".join(str(item) for item in chunk)}
+        body, cache_path, cached = client.get("/sidelined", params, refresh=refresh)
+        network_calls += int(not cached)
+        record_raw_response(
+            connection,
+            endpoint="/sidelined",
+            params=params,
+            body=body,
+            cache_path=cache_path,
+        )
+        entries = list(body.get("response") or [])
+        players_returned.update(
+            int(entry["id"]) for entry in entries if _int_or_none(entry.get("id")) is not None
+        )
+        rows = normalize_sidelined_entries(entries)
+        _bulk_insert(
+            connection,
+            "api_player_sidelined",
+            PLAYER_SIDELINED_COLUMNS,
+            rows,
+            replace=True,
+        )
+        normalized_rows += len(rows)
+    stored_row = connection.execute("SELECT count(*) FROM api_player_sidelined").fetchone()
+    return {
+        "players_requested": len(unique_ids),
+        "players_returned": len(players_returned),
+        "normalized_rows": normalized_rows,
+        "stored_rows": int(stored_row[0]) if stored_row else 0,
+        "network_calls": network_calls,
+        "batches": (len(unique_ids) + batch_size - 1) // batch_size,
     }
 
 

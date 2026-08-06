@@ -65,6 +65,9 @@ uv run fantabuddy ingest-api --seasons "2024,2025"
 uv run fantabuddy ingest-squads --season-start 2026
 uv run fantabuddy ingest-injuries --season-start 2026
 uv run fantabuddy ingest-fixtures --seasons "2021,2022,2023,2024,2025"
+uv run fantabuddy build-fixture-features
+uv run fantabuddy ingest-transfers --season-start 2026
+uv run fantabuddy ingest-sidelined --season-start 2026
 uv run fantabuddy reconcile-all
 uv run fantabuddy reconcile --season "2026/27"
 uv run fantabuddy backfill-careers --target-season-start 2026 --history-start 2021 --history-end 2025 --cohort current
@@ -85,6 +88,18 @@ stesso comando, le fixture complete sono saltate e le risposte parziali già in 
 vengono riutilizzate. Per default sono elaborate soltanto le partite concluse (`FT`,
 `AET`, `PEN`). Usare `--include-unfinished` per includere il calendario corrente e
 `--refresh` solo quando si desidera sostituire snapshot già completi.
+Per coppe e competizioni UEFA, `--serie-a-team-scope` salva il calendario completo ma
+acquisisce i dettagli soltanto delle partite con almeno una squadra presente in Serie A
+nella stagione corrispondente.
+
+`build-fixture-features` materializza un dataset point-in-time con una riga per
+giocatore e partita. Le medie mobili su 3, 5 e 10 convocazioni, la forma di squadra e
+la forza recente dell'avversario terminano sempre alla partita precedente. Titolarità,
+minuti, rating e bonus della partita corrente sono salvati separatamente nelle colonne
+`label_*`, così un modello non usa accidentalmente informazioni future.
+La view `ml_serie_a_player_fixture_training` limita inoltre le label alla Serie A,
+pur mantenendo nelle finestre precedenti il carico accumulato in coppe e competizioni
+UEFA.
 
 Per un primo test limitato a una stagione:
 
@@ -102,6 +117,9 @@ fantabuddy ingest-api --seasons 2022,2023
 fantabuddy ingest-squads --season-start 2026
 fantabuddy ingest-injuries --season-start 2026
 fantabuddy ingest-fixtures --seasons 2021,2022 [--league-id 135]
+fantabuddy build-fixture-features
+fantabuddy ingest-transfers --season-start 2026
+fantabuddy ingest-sidelined --season-start 2026
 fantabuddy backfill-careers --target-season-start 2026 --history-start 2021 --history-end 2025
 fantabuddy search-mapping-gaps --season 2026/27
 fantabuddy reconcile --season 2026/27 [--mapping-csv mapping.csv]
