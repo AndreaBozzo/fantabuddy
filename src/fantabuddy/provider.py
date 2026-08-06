@@ -423,10 +423,18 @@ def search_player_profiles(
 ) -> dict[str, int]:
     searches = 0
     profiles = 0
+    failures = 0
     for name in sorted(set(names)):
         stem = re.sub(r"\s+[A-Za-z]{1,3}(?:\.[A-Za-z]{1,3})*\.$", "", name).strip()
         stem = normalize_name(stem)
-        body, cache_path, cached = client.get("/players/profiles", {"search": stem})
+        if len(stem) < 4:
+            failures += 1
+            continue
+        try:
+            body, cache_path, cached = client.get("/players/profiles", {"search": stem})
+        except ApiFootballError:
+            failures += 1
+            continue
         searches += int(not cached)
         record_raw_response(
             connection,
@@ -458,7 +466,12 @@ def search_player_profiles(
                 rows,
             )
             profiles += len(rows)
-    return {"names": len(set(names)), "profiles": profiles, "network_calls": searches}
+    return {
+        "names": len(set(names)),
+        "profiles": profiles,
+        "network_calls": searches,
+        "failures": failures,
+    }
 
 
 def normalize_injury_entry(entry: dict[str, Any], season_start: int) -> tuple[object, ...]:

@@ -271,6 +271,9 @@ def backfill_careers(
                 WHERE league_id = ? AND season_start BETWEEN ? AND ?
                 UNION
                 SELECT DISTINCT api_player_id FROM api_squad_players WHERE season_start = ?
+                UNION
+                SELECT DISTINCT api_player_id FROM provider_player_mappings
+                WHERE status = 'accepted' AND api_player_id > 0
                 """,
                 [SERIE_A_LEAGUE_ID, history_start, history_end, target_season_start],
             ).fetchall()
