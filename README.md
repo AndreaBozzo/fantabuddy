@@ -7,6 +7,7 @@ configurabili in `config/league.default.yaml`.
 ## Cosa produce
 
 - warehouse DuckDB con storico dei listoni e statistiche API-Football;
+- storico granulare per fixture con eventi, formazioni, statistiche squadra e giocatore;
 - snapshot immutabili pre-campionato e settembre;
 - baseline spiegabile e modello ML soggetto a validazione temporale;
 - prezzi consigliati che riconciliano esattamente i 10.000 crediti della lega;
@@ -63,6 +64,7 @@ uv run fantabuddy ingest-api --seasons "2022,2023"
 uv run fantabuddy ingest-api --seasons "2024,2025"
 uv run fantabuddy ingest-squads --season-start 2026
 uv run fantabuddy ingest-injuries --season-start 2026
+uv run fantabuddy ingest-fixtures --seasons "2021,2022,2023,2024,2025"
 uv run fantabuddy reconcile-all
 uv run fantabuddy reconcile --season "2026/27"
 uv run fantabuddy backfill-careers --target-season-start 2026 --history-start 2021 --history-end 2025 --cohort current
@@ -75,6 +77,21 @@ sono marcate esplicitamente; una nuova esecuzione scarica soltanto il delta.
 `--refresh` ignora intenzionalmente la cache e va usato soltanto per aggiornare dati già
 acquisiti.
 
+Il backfill fixture scopre prima il calendario della competizione e richiede i dettagli
+in gruppi di massimo 20 ID. Se il provider non restituisce eventi, formazioni e
+statistiche nel payload aggregato, passa automaticamente agli endpoint specifici. Ogni
+partita viene marcata completa soltanto dopo una transazione riuscita; rilanciando lo
+stesso comando, le fixture complete sono saltate e le risposte parziali già in cache
+vengono riutilizzate. Per default sono elaborate soltanto le partite concluse (`FT`,
+`AET`, `PEN`). Usare `--include-unfinished` per includere il calendario corrente e
+`--refresh` solo quando si desidera sostituire snapshot già completi.
+
+Per un primo test limitato a una stagione:
+
+```powershell
+uv run fantabuddy ingest-fixtures --seasons "2021" --daily-reserve 100 --pause-ok
+```
+
 ## Comandi
 
 ```text
@@ -84,6 +101,7 @@ fantabuddy provider-check
 fantabuddy ingest-api --seasons 2022,2023
 fantabuddy ingest-squads --season-start 2026
 fantabuddy ingest-injuries --season-start 2026
+fantabuddy ingest-fixtures --seasons 2021,2022 [--league-id 135]
 fantabuddy backfill-careers --target-season-start 2026 --history-start 2021 --history-end 2025
 fantabuddy search-mapping-gaps --season 2026/27
 fantabuddy reconcile --season 2026/27 [--mapping-csv mapping.csv]

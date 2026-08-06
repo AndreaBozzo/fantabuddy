@@ -147,6 +147,138 @@ CREATE TABLE IF NOT EXISTS api_squad_players (
     PRIMARY KEY (api_player_id, season_start, team_id)
 );
 
+CREATE TABLE IF NOT EXISTS api_fixtures (
+    fixture_id INTEGER PRIMARY KEY,
+    league_id INTEGER NOT NULL,
+    season_start INTEGER NOT NULL,
+    round VARCHAR,
+    kickoff_at TIMESTAMPTZ,
+    timezone VARCHAR,
+    status_short VARCHAR,
+    elapsed INTEGER,
+    referee VARCHAR,
+    venue_id INTEGER,
+    venue_name VARCHAR,
+    venue_city VARCHAR,
+    home_team_id INTEGER NOT NULL,
+    home_team_name VARCHAR NOT NULL,
+    away_team_id INTEGER NOT NULL,
+    away_team_name VARCHAR NOT NULL,
+    home_goals INTEGER,
+    away_goals INTEGER,
+    halftime_home INTEGER,
+    halftime_away INTEGER,
+    fulltime_home INTEGER,
+    fulltime_away INTEGER,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS api_player_fixture_stats (
+    fixture_id INTEGER NOT NULL,
+    team_id INTEGER NOT NULL,
+    api_player_id INTEGER NOT NULL,
+    player_name VARCHAR NOT NULL,
+    position VARCHAR,
+    minutes INTEGER,
+    rating DOUBLE,
+    captain BOOLEAN,
+    substitute BOOLEAN,
+    shots INTEGER,
+    shots_on INTEGER,
+    goals INTEGER,
+    goals_conceded INTEGER,
+    assists INTEGER,
+    saves INTEGER,
+    passes INTEGER,
+    key_passes INTEGER,
+    pass_accuracy DOUBLE,
+    tackles INTEGER,
+    blocks INTEGER,
+    interceptions INTEGER,
+    duels INTEGER,
+    duels_won INTEGER,
+    dribbles_attempts INTEGER,
+    dribbles_success INTEGER,
+    dribbled_past INTEGER,
+    fouls_drawn INTEGER,
+    fouls_committed INTEGER,
+    yellow_cards INTEGER,
+    red_cards INTEGER,
+    penalties_won INTEGER,
+    penalties_committed INTEGER,
+    penalties_scored INTEGER,
+    penalties_missed INTEGER,
+    penalties_saved INTEGER,
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (fixture_id, team_id, api_player_id)
+);
+
+CREATE TABLE IF NOT EXISTS api_fixture_lineups (
+    fixture_id INTEGER NOT NULL,
+    team_id INTEGER NOT NULL,
+    api_player_id INTEGER NOT NULL,
+    player_name VARCHAR NOT NULL,
+    lineup_type VARCHAR NOT NULL,
+    position VARCHAR,
+    grid VARCHAR,
+    shirt_number INTEGER,
+    formation VARCHAR,
+    coach_id INTEGER,
+    coach_name VARCHAR,
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (fixture_id, team_id, api_player_id)
+);
+
+CREATE TABLE IF NOT EXISTS api_fixture_events (
+    fixture_id INTEGER NOT NULL,
+    event_index INTEGER NOT NULL,
+    elapsed INTEGER,
+    elapsed_extra INTEGER,
+    team_id INTEGER,
+    api_player_id INTEGER,
+    player_name VARCHAR,
+    assist_player_id INTEGER,
+    assist_player_name VARCHAR,
+    event_type VARCHAR,
+    detail VARCHAR,
+    comments VARCHAR,
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (fixture_id, event_index)
+);
+
+CREATE TABLE IF NOT EXISTS api_fixture_team_stats (
+    fixture_id INTEGER NOT NULL,
+    team_id INTEGER NOT NULL,
+    shots_on_goal INTEGER,
+    shots_off_goal INTEGER,
+    shots_inside_box INTEGER,
+    shots_outside_box INTEGER,
+    total_shots INTEGER,
+    blocked_shots INTEGER,
+    fouls INTEGER,
+    corner_kicks INTEGER,
+    offsides INTEGER,
+    ball_possession DOUBLE,
+    yellow_cards INTEGER,
+    red_cards INTEGER,
+    goalkeeper_saves INTEGER,
+    total_passes INTEGER,
+    passes_accurate INTEGER,
+    pass_accuracy DOUBLE,
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (fixture_id, team_id)
+);
+
+CREATE TABLE IF NOT EXISTS api_fixture_ingestion_status (
+    fixture_id INTEGER PRIMARY KEY,
+    league_id INTEGER NOT NULL,
+    season_start INTEGER NOT NULL,
+    status VARCHAR NOT NULL,
+    source_mode VARCHAR,
+    detail VARCHAR,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS provider_player_mappings (
     fantacalcio_id INTEGER NOT NULL,
     api_player_id INTEGER NOT NULL,

@@ -22,6 +22,7 @@ from fantabuddy.provider import (
     ApiFootballError,
     DailyQuotaGuard,
     backfill_player_histories,
+    ingest_fixture_history,
     ingest_injuries,
     ingest_player_season,
     ingest_squads,
@@ -156,6 +157,53 @@ def ingest_api(
                 raise typer.Exit(code=75) from exc
             except ApiFootballError as exc:
                 typer.echo(f"ACQUISIZIONE INCOMPLETA: {exc}", err=True)
+                raise typer.Exit(code=78) from exc
+
+
+@app.command("ingest-fixtures")
+def ingest_fixtures(
+    seasons: Annotated[str, typer.Option(help="Anni iniziali separati da virgola")],
+    league_id: Annotated[int, typer.Option("--league-id", min=1)] = SERIE_A_LEAGUE_ID,
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    cache_dir: Annotated[Path, typer.Option("--cache-dir")] = DEFAULT_CACHE,
+    daily_reserve: Annotated[int, typer.Option("--daily-reserve", min=1)] = 100,
+    batch_size: Annotated[int, typer.Option("--batch-size", min=1, max=20)] = 20,
+    include_unfinished: Annotated[
+        bool, typer.Option(help="Acquisisce dettagli anche per fixture non concluse")
+    ] = False,
+    refresh: Annotated[
+        bool, typer.Option(help="Ignora la cache e riacquisisce anche fixture complete")
+    ] = False,
+    pause_ok: Annotated[
+        bool, typer.Option(help="Termina con successo quando raggiunge la riserva")
+    ] = False,
+) -> None:
+    """Acquisisce fixture e dettagli granulari con batch da massimo 20 partite."""
+    season_values = [int(value.strip()) for value in seasons.split(",") if value.strip()]
+    with (
+        database(db_path) as connection,
+        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
+    ):
+        client.status()
+        for season_start in season_values:
+            try:
+                summary = ingest_fixture_history(
+                    connection,
+                    client,
+                    season_start,
+                    league_id=league_id,
+                    refresh=refresh,
+                    completed_only=not include_unfinished,
+                    batch_size=batch_size,
+                )
+                typer.echo(json.dumps(summary, indent=2))
+            except DailyQuotaGuard as exc:
+                typer.echo(f"PAUSA QUOTA: {exc}", err=True)
+                if pause_ok:
+                    return
+                raise typer.Exit(code=75) from exc
+            except ApiFootballError as exc:
+                typer.echo(f"ACQUISIZIONE FIXTURE INCOMPLETA: {exc}", err=True)
                 raise typer.Exit(code=78) from exc
 
 
