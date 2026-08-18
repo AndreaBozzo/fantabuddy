@@ -101,6 +101,14 @@ La view `ml_serie_a_player_fixture_training` limita inoltre le label alla Serie 
 pur mantenendo nelle finestre precedenti il carico accumulato in coppe e competizioni
 UEFA.
 
+Durante il build, due modelli point-in-time stimano per ogni giocatore la probabilità
+di partire titolare e i minuti attesi nella prossima partita. L'ultima stagione conclusa
+resta fuori dall'addestramento come validazione temporale: il modello di titolarità viene
+usato soltanto se migliora di almeno l'1% il Brier score della media mobile, e quello dei
+minuti soltanto se migliora di almeno l'1% il MAE. In caso contrario il report usa
+automaticamente le rispettive baseline. Le metriche `START` e `MIN`, la colonna `Tit.%`
+e i minuti stagionali derivati sono esposti nel report per rendere verificabile la scelta.
+
 Per un primo test limitato a una stagione:
 
 ```powershell

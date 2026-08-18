@@ -12,6 +12,7 @@ import numpy as np
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error
 
+from fantabuddy.availability import train_availability_models
 from fantabuddy.config import ROLES, LeagueConfig, ScoringConfig
 
 FEATURE_NAMES = (
@@ -60,6 +61,7 @@ class Projection:
     rosterable: bool = False
     tier: str = "E"
     reliability: int = 0
+    expected_start_share: float = 0.0
     expected_minutes: float = 0.0
     expected_goals: float = 0.0
     expected_assists: float = 0.0
@@ -287,8 +289,27 @@ def _current_context(
         JOIN api_injuries i ON i.api_player_id = m.api_player_id
         WHERE m.season = ? AND m.status = 'accepted' AND i.season_start = ?
           AND CAST(i.fixture_date AS DATE) BETWEEN ? AND ?
+        UNION
+        SELECT DISTINCT m.fantacalcio_id
+        FROM provider_player_mappings m
+        JOIN api_player_sidelined s ON s.api_player_id = m.api_player_id
+        WHERE m.season = ? AND m.status = 'accepted'
+          AND s.start_date <= ?
+          AND (
+            s.end_date >= ?
+            OR (s.end_date IS NULL AND s.start_date >= ? - INTERVAL 180 DAY)
+          )
         """,
-        [target_season, season_start, as_of - timedelta(days=7), as_of + timedelta(days=45)],
+        [
+            target_season,
+            season_start,
+            as_of - timedelta(days=7),
+            as_of + timedelta(days=45),
+            target_season,
+            as_of,
+            as_of,
+            as_of,
+        ],
     ).fetchall()
     return overrides, {int(row[0]) for row in injury_rows}
 
@@ -370,7 +391,37 @@ def train_and_project(
     if not target:
         raise ValueError(f"nessun giocatore attivo con storico per {target_season}")
 
+    availability_forecasts, availability_validation = train_availability_models(
+        connection, target_season, as_of
+    )
     metrics: list[ModelMetric] = []
+    if availability_validation is not None:
+        metrics.extend(
+            [
+                ModelMetric(
+                    role="START",
+                    train_count=availability_validation.train_count,
+                    validation_count=availability_validation.validation_count,
+                    baseline_mae=availability_validation.start_baseline_brier,
+                    ml_mae=availability_validation.start_model_brier,
+                    baseline_spearman=None,
+                    ml_spearman=None,
+                    use_ml=availability_validation.use_start_model,
+                    ml_weight=1.0 if availability_validation.use_start_model else 0.0,
+                ),
+                ModelMetric(
+                    role="MIN",
+                    train_count=availability_validation.train_count,
+                    validation_count=availability_validation.validation_count,
+                    baseline_mae=availability_validation.minutes_baseline_mae,
+                    ml_mae=availability_validation.minutes_model_mae,
+                    baseline_spearman=None,
+                    ml_spearman=None,
+                    use_ml=availability_validation.use_minutes_model,
+                    ml_weight=1.0 if availability_validation.use_minutes_model else 0.0,
+                ),
+            ]
+        )
     projections: list[Projection] = []
     for role in ROLES:
         role_all = [row for row in train_completed if row["classic_role"] == role]
@@ -472,6 +523,19 @@ def train_and_project(
             expected_minutes, expected_goals, expected_assists, expected_cards, expected_rating = (
                 performance[player_id]
             )
+            expected_start_share = max(0.01, min(0.99, expected_minutes / (38.0 * 90.0)))
+            availability = availability_forecasts.get(player_id)
+            if availability is not None:
+                previous_expected_minutes = expected_minutes
+                expected_start_share = availability.expected_start_share
+                expected_minutes = availability.expected_match_minutes * 38.0
+                if previous_expected_minutes > 0:
+                    volume_ratio = max(
+                        0.50, min(1.50, expected_minutes / previous_expected_minutes)
+                    )
+                    expected_goals *= volume_ratio
+                    expected_assists *= volume_ratio
+                    expected_cards *= volume_ratio
             historical_baseline = _baseline(row, _role_ratio(role_all))
             if not use_official_fvm_anchor:
                 baseline_score = historical_baseline
@@ -493,6 +557,7 @@ def train_and_project(
             if override:
                 start_share = override.get("expected_start_share")
                 if start_share is not None:
+                    expected_start_share = float(start_share)
                     baseline_score *= 0.80 + 0.40 * float(start_share)
                     expected_minutes *= 0.80 + 0.40 * float(start_share)
                 baseline_score *= 1.0 + float(override.get("risk_modifier") or 0.0)
@@ -500,6 +565,8 @@ def train_and_project(
                 baseline_score *= 1.02 if override.get("set_piece_rank") == 1 else 1.0
             if player_id in injured_players:
                 baseline_score *= 0.90
+                expected_start_share *= 0.75
+                expected_minutes *= 0.90
             ml_score: float | None = None
             projected = baseline_score
             if production_model is not None:
@@ -515,7 +582,17 @@ def train_and_project(
             reliability -= 10 if row["role_changed"] else 0
             reliability -= 15 if player_id in injured_players else 0
             reliability += 5 if override else 0
+            reliability += 8 if availability is not None else 0
             reliability = max(10, min(100, reliability))
+            availability_explanation = ""
+            if availability is not None:
+                start_source = "ML" if availability.used_start_model else "media mobile"
+                minutes_source = "ML" if availability.used_minutes_model else "media mobile"
+                availability_explanation = (
+                    f"; previsione fixture grezza: titolarità "
+                    f"{availability.expected_start_share:.0%} ({start_source}), "
+                    f"{availability.expected_match_minutes:.0f} min/gara ({minutes_source})"
+                )
             explanation = (
                 f"baseline: quotazione iniziale + storico FVM ({seasons_seen} stagioni); "
                 + (
@@ -526,6 +603,7 @@ def train_and_project(
                 + ("; statistiche API collegate" if has_api else "; API non ancora collegata")
                 + ("; infortunio corrente" if player_id in injured_players else "")
                 + (f"; override: {override.get('source')}" if override else "")
+                + availability_explanation
             )
             projections.append(
                 Projection(
@@ -540,6 +618,7 @@ def train_and_project(
                     ml_score=round(ml_score, 3) if ml_score is not None else None,
                     projected_score=round(max(1.0, projected), 3),
                     reliability=reliability,
+                    expected_start_share=round(expected_start_share, 3),
                     expected_minutes=round(expected_minutes, 1),
                     expected_goals=round(expected_goals, 2),
                     expected_assists=round(expected_assists, 2),
@@ -750,9 +829,9 @@ def persist_build(
         INSERT INTO auction_values (
             build_id, fantacalcio_id, name, team, role, status, official_quote, official_fvm,
             baseline_score, ml_score, projected_score, suggested_credits, rosterable, tier,
-            reliability, expected_minutes, expected_goals, expected_assists, expected_cards,
-            expected_rating, explanation
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            reliability, expected_start_share, expected_minutes, expected_goals,
+            expected_assists, expected_cards, expected_rating, explanation
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -771,6 +850,7 @@ def persist_build(
                 projection.rosterable,
                 projection.tier,
                 projection.reliability,
+                projection.expected_start_share,
                 projection.expected_minutes,
                 projection.expected_goals,
                 projection.expected_assists,

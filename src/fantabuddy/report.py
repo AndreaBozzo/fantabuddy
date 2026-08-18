@@ -40,12 +40,12 @@ pre{white-space:pre-wrap}.footer{margin:24px 0;color:var(--muted)}
 <h2>Ranking d'asta</h2>
 <div class="filters"><input id="search" placeholder="Cerca giocatore o squadra"><select id="role"><option value="">Tutti i ruoli</option><option>P</option><option>D</option><option>C</option><option>A</option></select><select id="tier"><option value="">Tutte le fasce</option><option>S</option><option>A</option><option>B</option><option>C</option><option>D</option><option>E</option></select><label><input id="rosterable" type="checkbox"> solo pool acquistabile</label></div>
 <div class="table-wrap"><table id="ranking"><thead><tr>
-<th data-key="role">R</th><th data-key="name">Nome</th><th data-key="team">Squadra</th><th data-key="tier">Fascia</th><th data-key="suggested_credits">Crediti</th><th data-key="official_fvm">FVM</th><th data-key="official_quote">Qt.</th><th data-key="projected_score">Score</th><th data-key="expected_minutes">Min</th><th data-key="expected_goals">Gol</th><th data-key="expected_assists">Assist</th><th data-key="reliability">Affid.</th><th data-key="explanation">Spiegazione</th>
+<th data-key="role">R</th><th data-key="name">Nome</th><th data-key="team">Squadra</th><th data-key="tier">Fascia</th><th data-key="suggested_credits">Crediti</th><th data-key="official_fvm">FVM</th><th data-key="official_quote">Qt.</th><th data-key="projected_score">Score</th><th data-key="expected_start_share">Tit.%</th><th data-key="expected_minutes">Min</th><th data-key="expected_goals">Gol</th><th data-key="expected_assists">Assist</th><th data-key="reliability">Affid.</th><th data-key="explanation">Spiegazione</th>
 </tr></thead><tbody></tbody></table></div>
 </section>
-<div class="grid"><section class="panel"><h2>Validazione modelli</h2><table><thead><tr><th>Ruolo</th><th>Train</th><th>Valid.</th><th>MAE base</th><th>MAE ML</th><th>ρ base</th><th>ρ ML</th><th>Usa ML</th></tr></thead><tbody>
+<div class="grid"><section class="panel"><h2>Validazione modelli</h2><table><thead><tr><th>Modello</th><th>Train</th><th>Valid.</th><th>Errore base</th><th>Errore ML</th><th>ρ base</th><th>ρ ML</th><th>Usa ML</th></tr></thead><tbody>
 {% for m in metrics %}<tr><td>{{ m.role }}</td><td>{{ m.train_count }}</td><td>{{ m.validation_count }}</td><td>{{ fmt(m.baseline_mae) }}</td><td>{{ fmt(m.ml_mae) }}</td><td>{{ fmt(m.baseline_spearman) }}</td><td>{{ fmt(m.ml_spearman) }}</td><td>{{ 'sì' if m.use_ml else 'no' }}</td></tr>{% endfor %}
-</tbody></table><p class="muted">Target: performance realizzata (minuti × rating, gol, assist e cartellini). Backtest walk-forward sulle ultime due stagioni; il ML entra solo con MAE migliore di almeno il 3% e correlazione di rango non materialmente inferiore.</p></section>
+</tbody></table><p class="muted">P/D/C/A: performance stagionale con backtest walk-forward. START: Brier score della probabilità di titolarità; MIN: MAE dei minuti per partita. Ogni modello entra soltanto se supera la propria baseline temporale.</p></section>
 <section class="panel"><h2>Provenienza e qualità</h2><p>Listone: <code>{{ listone_snapshot }}</code></p><p>Record listone: {{ listone_records }} ({{ listone_active }} attivi, {{ listone_ceduti }} ceduti)</p><p>Mapping API pendenti: {{ pending_count }}</p><p>Override attivi: {{ override_count }} · giocatori con segnale infortunio: {{ injury_count }}</p><p class="muted">Il rating del provider non è un voto ufficiale Fantacalcio. FVM e quotazioni sono riferimenti di mercato, non prezzi direttamente spendibili.</p></section></div>
 <div class="footer">Report autonomo generato da Fantabuddy. Filtri e ordinamento funzionano senza server.</div>
 </main>
@@ -53,7 +53,7 @@ pre{white-space:pre-wrap}.footer{margin:24px 0;color:var(--muted)}
 const tbody=document.querySelector('#ranking tbody');const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function render(){const q=document.querySelector('#search').value.toLowerCase(),role=document.querySelector('#role').value,tier=document.querySelector('#tier').value,only=document.querySelector('#rosterable').checked;
 let rows=DATA.filter(x=>(!q||(x.name+' '+x.team).toLowerCase().includes(q))&&(!role||x.role===role)&&(!tier||x.tier===tier)&&(!only||x.rosterable));rows.sort((a,b)=>{let x=a[sortKey],y=b[sortKey];if(typeof x==='string'){x=x.toLowerCase();y=String(y).toLowerCase()}return(x<y?-1:x>y?1:0)*(sortAsc?1:-1)});
-tbody.innerHTML=rows.map(x=>`<tr><td>${esc(x.role)}</td><td>${esc(x.name)}</td><td>${esc(x.team)}</td><td class="tier tier-${esc(x.tier)}">${esc(x.tier)}</td><td><b>${x.suggested_credits}</b></td><td>${x.official_fvm}</td><td>${x.official_quote}</td><td>${Number(x.projected_score).toFixed(1)}</td><td>${Number(x.expected_minutes).toFixed(0)}</td><td>${Number(x.expected_goals).toFixed(1)}</td><td>${Number(x.expected_assists).toFixed(1)}</td><td>${x.reliability}%</td><td title="${esc(x.explanation)}">${esc(x.explanation)}</td></tr>`).join('')}
+tbody.innerHTML=rows.map(x=>`<tr><td>${esc(x.role)}</td><td>${esc(x.name)}</td><td>${esc(x.team)}</td><td class="tier tier-${esc(x.tier)}">${esc(x.tier)}</td><td><b>${x.suggested_credits}</b></td><td>${x.official_fvm}</td><td>${x.official_quote}</td><td>${Number(x.projected_score).toFixed(1)}</td><td>${(100*Number(x.expected_start_share)).toFixed(0)}%</td><td>${Number(x.expected_minutes).toFixed(0)}</td><td>${Number(x.expected_goals).toFixed(1)}</td><td>${Number(x.expected_assists).toFixed(1)}</td><td>${x.reliability}%</td><td title="${esc(x.explanation)}">${esc(x.explanation)}</td></tr>`).join('')}
 document.querySelectorAll('.filters input,.filters select').forEach(el=>el.addEventListener('input',render));document.querySelectorAll('th[data-key]').forEach(th=>th.addEventListener('click',()=>{const key=th.dataset.key;if(sortKey===key)sortAsc=!sortAsc;else{sortKey=key;sortAsc=true}render()}));render();</script></body></html>"""
 
 
@@ -120,8 +120,8 @@ def render_report(connection: duckdb.DuckDBPyConnection, build_id: str, output_p
             """
             SELECT fantacalcio_id, name, team, role, official_quote, official_fvm,
                    baseline_score, ml_score, projected_score, suggested_credits,
-                   rosterable, tier, reliability, expected_minutes, expected_goals,
-                   expected_assists, expected_cards, expected_rating, explanation
+                   rosterable, tier, reliability, expected_start_share, expected_minutes,
+                   expected_goals, expected_assists, expected_cards, expected_rating, explanation
             FROM auction_values WHERE build_id = ? ORDER BY role, suggested_credits DESC, name
             """,
             [build_id],
@@ -157,11 +157,22 @@ def render_report(connection: duckdb.DuckDBPyConnection, build_id: str, output_p
     ).fetchone()
     injury_count_row = connection.execute(
         """
-        SELECT count(DISTINCT m.fantacalcio_id)
-        FROM provider_player_mappings m JOIN api_injuries i USING (api_player_id)
-        WHERE m.season = ? AND m.status = 'accepted'
+        SELECT count(DISTINCT fantacalcio_id) FROM (
+          SELECT m.fantacalcio_id
+          FROM provider_player_mappings m JOIN api_injuries i USING (api_player_id)
+          WHERE m.season = ? AND m.status = 'accepted'
+            AND CAST(i.fixture_date AS DATE) BETWEEN ? - INTERVAL 7 DAY AND ? + INTERVAL 45 DAY
+          UNION
+          SELECT m.fantacalcio_id
+          FROM provider_player_mappings m JOIN api_player_sidelined s USING (api_player_id)
+          WHERE m.season = ? AND m.status = 'accepted' AND s.start_date <= ?
+            AND (
+              s.end_date >= ?
+              OR (s.end_date IS NULL AND s.start_date >= ? - INTERVAL 180 DAY)
+            )
+        )
         """,
-        [build[0]],
+        [build[0], build[1], build[1], build[0], build[1], build[1], build[1]],
     ).fetchone()
     override_count = override_count_row[0] if override_count_row else 0
     injury_count = injury_count_row[0] if injury_count_row else 0

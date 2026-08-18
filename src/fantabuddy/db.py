@@ -423,6 +423,7 @@ CREATE TABLE IF NOT EXISTS auction_values (
     rosterable BOOLEAN NOT NULL,
     tier VARCHAR NOT NULL,
     reliability INTEGER NOT NULL,
+    expected_start_share DOUBLE NOT NULL DEFAULT 0,
     expected_minutes DOUBLE NOT NULL DEFAULT 0,
     expected_goals DOUBLE NOT NULL DEFAULT 0,
     expected_assists DOUBLE NOT NULL DEFAULT 0,
@@ -433,6 +434,7 @@ CREATE TABLE IF NOT EXISTS auction_values (
 );
 
 ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_minutes DOUBLE DEFAULT 0;
+ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_start_share DOUBLE DEFAULT 0;
 ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_goals DOUBLE DEFAULT 0;
 ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_assists DOUBLE DEFAULT 0;
 ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_cards DOUBLE DEFAULT 0;
