@@ -109,6 +109,12 @@ minuti soltanto se migliora di almeno l'1% il MAE. In caso contrario il report u
 automaticamente le rispettive baseline. Le metriche `START` e `MIN`, la colonna `Tit.%`
 e i minuti stagionali derivati sono esposti nel report per rendere verificabile la scelta.
 
+Il report HTML è l'interfaccia operativa principale: riassume le prime scelte per ruolo,
+i titolari probabili a costo contenuto, gli alert di disponibilità ancora aperti, i
+trasferimenti recenti verificati contro il listone e le variazioni rispetto allo snapshot
+precedente. Il ranking completo resta filtrabile e ordinabile offline; una sezione finale
+dichiara copertura, gate dei modelli e freschezza di ogni fonte.
+
 Per un primo test limitato a una stagione:
 
 ```powershell

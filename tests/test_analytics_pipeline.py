@@ -128,6 +128,10 @@ def test_end_to_end_build_includes_newcomers_and_reconciles_budget(tmp_path: Pat
     assert (output / "manifest.json").is_file()
     report = (output / "report.html").read_text(encoding="utf-8")
     assert "Fantabuddy" in report
+    assert "Segnali operativi" in report
+    assert "Ranking completo" in report
+    assert "Freschezza delle fonti" in report
+    assert 'id="signal"' in report
     assert "const DATA=[{" in report
     assert "&#34;fantacalcio_id&#34;" not in report
     september_output = Path(september_result["output_dir"])
