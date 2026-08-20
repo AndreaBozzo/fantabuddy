@@ -143,11 +143,15 @@ fantabuddy build --season 2026/27 --as-of 2026-08-05 --kind preseason
 fantabuddy run --listoni-dir <cartella> --season 2026/27 --as-of <data>
 ```
 
-I fuzzy match tra provider e listone non vengono mai approvati automaticamente. Il
-comando `reconcile` esporta i candidati in `outputs/mapping-pending.csv`; un mapping
-manuale usa le colonne `fantacalcio_id,api_player_id,season,status,note`; `status` può
-essere `accepted` oppure `excluded`. Il build è bloccato finché ogni calciatore attivo
-non ha una decisione esplicita.
+Un abbinamento basato sulla sola somiglianza tra stringhe non viene mai approvato
+automaticamente: resta `pending` finché non lo si decide a mano. Sono accettate in
+automatico soltanto le corrispondenze con confidenza almeno 0.94 e margine di almeno
+0.03 sul secondo candidato: identità storica già accettata, abbreviazioni del listone e
+cognome più iniziale nella stessa squadra. Il comando `reconcile` esporta i candidati
+in `outputs/mapping-pending.csv`; un mapping manuale usa le colonne
+`fantacalcio_id,api_player_id,season,status,note`; `status` può essere `accepted`
+oppure `excluded`. Il build è bloccato finché ogni calciatore attivo non ha una
+decisione esplicita.
 
 Titolarità, rigoristi, piazzati e rischi editoriali possono essere inseriti senza scraping
 copiando `config/overrides.example.csv`. Ogni riga deve indicare fonte, autore e periodo

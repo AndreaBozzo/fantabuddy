@@ -3,6 +3,8 @@ name = "fantabuddy"
 version = "0.1.0"
 description = "Base dati e valutazioni riproducibili per aste Fantacalcio Classic"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
   "duckdb>=1.3.0",
