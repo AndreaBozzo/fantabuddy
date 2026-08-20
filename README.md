@@ -1,5 +1,10 @@
 # Fantabuddy
 
+> Il progetto è raccontato per esteso qui:
+> [Ho costruito un modello per il Fantacalcio](https://andreabozzo.github.io/AndreaBozzo/blog/posts/fantabuddy-blog/)
+> · [English version](https://andreabozzo.github.io/AndreaBozzo/blog/en/posts/fantabuddy-blog/).
+> Documentation and code comments are in Italian, like the league they were built for.
+
 Base dati riproducibile e report d'asta per Fantacalcio Classic. Il progetto nasce per
 leghe da 10 partecipanti, budget 1000 e rose 3P/8D/8C/6A, ma tutti questi valori sono
 configurabili in `config/league.default.yaml`.
