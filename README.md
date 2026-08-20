@@ -43,6 +43,12 @@ server, niente internet, niente notebook aperto a metà.
 Servono Python 3.12, [uv](https://docs.astral.sh/uv/) e il listone ufficiale già
 scaricato (`Quotazioni_Fantacalcio_Stagione_*.xlsx`).
 
+📥 **[Scarica il listone](https://www.fantacalcio.it/api/v1/Excel/prices/21/1)** — è il
+link diretto dietro al bottone *Scarica* di
+[fantacalcio.it/quotazioni-fantacalcio](https://www.fantacalcio.it/quotazioni-fantacalcio).
+Funziona solo se sei loggato sul sito: da sloggato risponde 401 e non scarica niente.
+Salvalo dove vuoi, poi passi quella cartella a `--listoni-dir`.
+
 ```powershell
 uv sync --all-groups
 uv run fantabuddy run `
