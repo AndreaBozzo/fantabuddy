@@ -9,7 +9,7 @@ from fantabuddy.analytics import allocate_prices, persist_build, train_and_proje
 from fantabuddy.config import LeagueConfig
 from fantabuddy.db import database, ingest_listone
 from fantabuddy.excel import read_listone
-from fantabuddy.report import export_build
+from fantabuddy.report import _availability_category, export_build
 
 
 def _records(season_index: int) -> list[dict[str, object]]:
@@ -131,6 +131,12 @@ def test_end_to_end_build_includes_newcomers_and_reconciles_budget(tmp_path: Pat
     assert "Segnali operativi" in report
     assert "Ranking completo" in report
     assert "Freschezza delle fonti" in report
+    assert "Disponibilità giocatori" in report
+    assert 'id="availabilitySearch"' in report
+    assert 'id="availabilityToggle"' not in report
+    assert "Rosa API da verificare" in report
+    assert "Δ FVM" in report
+    assert '"squad_confirmed": null' in report
     assert 'id="signal"' in report
     assert "const DATA=[{" in report
     assert "&#34;fantacalcio_id&#34;" not in report
@@ -138,3 +144,12 @@ def test_end_to_end_build_includes_newcomers_and_reconciles_budget(tmp_path: Pat
     diff = (september_output / "diff.csv").read_text(encoding="utf-8")
     assert "Nuovo settembre" in diff
     assert "aggiornato" in diff or "nuovo" in diff
+
+
+def test_availability_categories_separate_non_injury_signals() -> None:
+    assert _availability_category("Calf Muscle Strain") == "Infortunio"
+    assert _availability_category("Health problems") == "Infortunio"
+    assert _availability_category("Illness") == "Malattia"
+    assert _availability_category("Red Card") == "Squalifica"
+    assert _availability_category("Transfer negotiations") == "Mercato"
+    assert _availability_category("Coach's decision") == "Scelta tecnica"
