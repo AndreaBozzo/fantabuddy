@@ -66,6 +66,7 @@ def _expand_inputs(paths: list[Path]) -> list[Path]:
         resolved = path.expanduser().resolve()
         if resolved.is_dir():
             expanded.extend(sorted(resolved.glob("Quotazioni_Fantacalcio_Stagione_*.xlsx")))
+            expanded.extend(sorted(resolved.glob("lista_calciatori_*.xlsx")))
         else:
             expanded.append(resolved)
     unique = list(dict.fromkeys(expanded))
@@ -78,12 +79,16 @@ def _expand_inputs(paths: list[Path]) -> list[Path]:
 def import_listoni(
     paths: Annotated[list[Path], typer.Argument(help="File XLSX o cartelle da importare")],
     db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    season: Annotated[
+        str | None,
+        typer.Option(help="Stagione per gli export di lega che non la includono nel filename"),
+    ] = None,
 ) -> None:
     """Valida e importa listoni Fantacalcio senza modificare gli originali."""
     inputs = _expand_inputs(paths)
     with database(db_path) as connection:
         for path in inputs:
-            data = read_listone(path)
+            data = read_listone(path, season_override=season)
             inserted = ingest_listone(connection, data)
             state = "importato" if inserted else "già presente"
             typer.echo(
@@ -444,7 +449,6 @@ def search_mapping_gaps(
             WHERE f.season=? AND f.status='active'
             GROUP BY f.fantacalcio_id, f.name
             HAVING coalesce(count_if(m.status='accepted'), 0) = 0
-               AND coalesce(count_if(m.status='pending'), 0) = 0
             ORDER BY f.name
             """,
             [season],
@@ -614,7 +618,7 @@ def run(
     paths = _expand_inputs([listoni_dir])
     with database(db_path) as connection:
         for path in paths:
-            ingest_listone(connection, read_listone(path))
+            ingest_listone(connection, read_listone(path, season_override=season))
     validate(db_path=db_path, target_season=season)
     build(
         season=season,

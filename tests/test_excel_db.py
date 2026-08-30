@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from conftest import write_listone
+from openpyxl import Workbook
 
 from fantabuddy.db import database, ingest_listone, listone_summary
 from fantabuddy.excel import read_listone
@@ -38,3 +40,58 @@ def test_rejects_duplicate_ids_across_active_and_ceduti(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="ID duplicati"):
         read_listone(path)
+
+
+def test_reads_single_sheet_league_export_with_explicit_season(tmp_path: Path) -> None:
+    path = tmp_path / "lista_calciatori_test.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Lista calciatori"
+    sheet.append(
+        [
+            "#",
+            "Nome",
+            "Fuori lista",
+            "Sq.",
+            "Under",
+            "R.",
+            "R.MANTRA",
+            "PGv",
+            "MV",
+            "FM",
+            "FVM/1000",
+            "QUOT.",
+            "FantaSquadra",
+            "Costo",
+        ]
+    )
+    sheet.append([1, "Attivo", None, "Inter", 24, "A", "Pc", 1, 6, 6, 120, 20])
+    sheet.append([2, "Fuori", "*", "Roma", 30, "D", "Dc", 0, 0, 0, 2, 1])
+    workbook.save(path)
+
+    with pytest.raises(ValueError, match="specificarla esplicitamente"):
+        read_listone(path)
+
+    data = read_listone(path, season_override="2026/27")
+    assert data.season == "2026/27"
+    assert data.active_count == 1
+    assert data.ceduti_count == 1
+    assert data.records[0].quote_current == 20
+    assert data.records[0].fvm == 120
+    assert data.records[1].status == "ceduto"
+
+    canonical_path = write_listone(
+        tmp_path / "Quotazioni_Fantacalcio_Stagione_2026_27.xlsx",
+        "2026/27",
+        [{"id": 1, "role": "A", "name": "Attivo", "fvm": 120}],
+        [{"id": 2, "role": "D", "name": "Fuori", "fvm": 2}],
+    )
+    canonical = read_listone(canonical_path)
+    canonical.source_modified_at = datetime(2026, 8, 30, 17, tzinfo=UTC)
+    data.source_modified_at = datetime(2026, 8, 30, 18, tzinfo=UTC)
+    with database(tmp_path / "source-priority.duckdb") as connection:
+        ingest_listone(connection, canonical)
+        ingest_listone(connection, data)
+        latest = listone_summary(connection)
+
+    assert latest[0]["snapshot_id"] == canonical.snapshot_id

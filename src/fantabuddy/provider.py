@@ -502,20 +502,21 @@ def ingest_injuries(
     league_id: int = SERIE_A_LEAGUE_ID,
     refresh: bool = False,
 ) -> dict[str, int]:
-    page = 1
-    total_pages = 1
-    inserted = 0
-    calls = 0
-    while page <= total_pages:
-        params: dict[str, object] = {"league": league_id, "season": season_start, "page": page}
-        body, cache_path, cached = client.get("/injuries", params, refresh=refresh)
-        calls += int(not cached)
-        record_raw_response(
-            connection, endpoint="/injuries", params=params, body=body, cache_path=cache_path
+    params: dict[str, object] = {"league": league_id, "season": season_start}
+    body, cache_path, cached = client.get("/injuries", params, refresh=refresh)
+    record_raw_response(
+        connection, endpoint="/injuries", params=params, body=body, cache_path=cache_path
+    )
+    normalized = [
+        normalize_injury_entry(entry, season_start) for entry in body.get("response") or []
+    ]
+    rows = list({(row[0], row[1], row[4]): row for row in normalized}.values())
+    connection.execute("BEGIN TRANSACTION")
+    try:
+        connection.execute(
+            "DELETE FROM api_injuries WHERE season_start = ? AND league_id = ?",
+            [season_start, league_id],
         )
-        paging = body.get("paging") or {}
-        total_pages = int(paging.get("total") or 1)
-        rows = [normalize_injury_entry(entry, season_start) for entry in body.get("response") or []]
         if rows:
             connection.executemany(
                 """
@@ -524,9 +525,17 @@ def ingest_injuries(
                 """,
                 rows,
             )
-            inserted += len(rows)
-        page += 1
-    return {"season": season_start, "rows": inserted, "network_calls": calls, "pages": total_pages}
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
+    else:
+        connection.execute("COMMIT")
+    return {
+        "season": season_start,
+        "rows": len(rows),
+        "network_calls": int(not cached),
+        "pages": 1,
+    }
 
 
 def ingest_squads(
@@ -547,8 +556,8 @@ def ingest_squads(
         cache_path=team_cache,
     )
     teams = [entry["team"] for entry in team_body.get("response") or []]
-    inserted = 0
     calls = int(not teams_cached)
+    rows: list[tuple[object, ...]] = []
     for team in teams:
         params: dict[str, object] = {"team": int(team["id"])}
         body, cache_path, cached = client.get("/players/squads", params, refresh=refresh)
@@ -560,7 +569,6 @@ def ingest_squads(
             body=body,
             cache_path=cache_path,
         )
-        rows: list[tuple[object, ...]] = []
         for squad in body.get("response") or []:
             squad_team = squad.get("team") or team
             for player in squad.get("players") or []:
@@ -577,13 +585,22 @@ def ingest_squads(
                         datetime.now(tz=UTC),
                     )
                 )
+    connection.execute("BEGIN TRANSACTION")
+    try:
+        connection.execute(
+            "DELETE FROM api_squad_players WHERE season_start = ?", [season_start]
+        )
         if rows:
             connection.executemany(
                 "INSERT OR REPLACE INTO api_squad_players VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
-            inserted += len(rows)
-    return {"season": season_start, "teams": len(teams), "rows": inserted, "network_calls": calls}
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
+    else:
+        connection.execute("COMMIT")
+    return {"season": season_start, "teams": len(teams), "rows": len(rows), "network_calls": calls}
 
 
 COMPLETED_FIXTURE_STATUSES = {"FT", "AET", "PEN"}

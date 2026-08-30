@@ -12,6 +12,7 @@ from fantabuddy.provider import (
     ApiFootballClient,
     DailyQuotaGuard,
     ingest_fixture_history,
+    ingest_injuries,
     ingest_sidelined_history,
     ingest_squads,
     ingest_team_transfers,
@@ -120,6 +121,87 @@ def test_ingest_squads_uses_one_request_per_team_and_cache(tmp_path: Path) -> No
     assert summary == {"season": 2026, "teams": 1, "rows": 1, "network_calls": 2}
     assert cached_summary["network_calls"] == 0
     assert count and count[0] == 1
+
+
+def test_ingest_squads_replaces_the_previous_season_snapshot(tmp_path: Path) -> None:
+    squad_players = [
+        {"id": 99, "name": "Current Player", "position": "Attacker"},
+        {"id": 100, "name": "Departing Player", "position": "Defender"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/status":
+            return httpx.Response(200, json=_status())
+        if request.url.path == "/teams":
+            return httpx.Response(
+                200,
+                json={
+                    "errors": [],
+                    "results": 1,
+                    "response": [{"team": {"id": 10, "name": "Inter"}}],
+                },
+            )
+        assert request.url.path == "/players/squads"
+        return httpx.Response(
+            200,
+            json={
+                "errors": [],
+                "results": 1,
+                "response": [
+                    {
+                        "team": {"id": 10, "name": "Inter"},
+                        "players": squad_players,
+                    }
+                ],
+            },
+        )
+
+    with (
+        database(tmp_path / "db.duckdb") as connection,
+        ApiFootballClient(
+            tmp_path / "cache", api_key="test-key", transport=httpx.MockTransport(handler)
+        ) as client,
+    ):
+        ingest_squads(connection, client, 2026)
+        squad_players.pop()
+        summary = ingest_squads(connection, client, 2026, refresh=True)
+        stored = connection.execute(
+            "SELECT api_player_id FROM api_squad_players WHERE season_start = 2026"
+        ).fetchall()
+
+    assert summary == {"season": 2026, "teams": 1, "rows": 1, "network_calls": 2}
+    assert stored == [(99,)]
+
+
+def test_ingest_injuries_does_not_send_removed_page_parameter(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/status":
+            return httpx.Response(200, json=_status())
+        assert request.url.path == "/injuries"
+        assert "page" not in request.url.params
+        return httpx.Response(200, json={"errors": [], "results": 0, "response": []})
+
+    with (
+        database(tmp_path / "db.duckdb") as connection,
+        ApiFootballClient(
+            tmp_path / "cache", api_key="test-key", transport=httpx.MockTransport(handler)
+        ) as client,
+    ):
+        connection.execute(
+            """
+            INSERT INTO api_injuries VALUES (
+              99, 2026, 135, 10, 500, 'Stale Player', 'Inter',
+              'Missing Fixture', 'Old signal', '2026-08-01', current_timestamp
+            )
+            """
+        )
+        summary = ingest_injuries(connection, client, 2026)
+        stored = connection.execute(
+            "SELECT count(*) FROM api_injuries WHERE season_start = 2026"
+        ).fetchone()
+
+    assert summary == {"season": 2026, "rows": 0, "network_calls": 1, "pages": 1}
+    assert stored == (0,)
 
 
 def _fixture_entry(*, embedded: bool) -> dict[str, object]:

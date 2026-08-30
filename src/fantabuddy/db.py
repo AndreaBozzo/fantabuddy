@@ -444,7 +444,11 @@ CREATE OR REPLACE VIEW latest_listone_snapshots AS
 SELECT * EXCLUDE (row_number)
 FROM (
     SELECT *, row_number() OVER (
-        PARTITION BY season ORDER BY source_modified_at DESC, imported_at DESC
+        PARTITION BY season ORDER BY
+          CAST(source_modified_at AS DATE) DESC,
+          CASE WHEN source_filename LIKE 'Quotazioni_Fantacalcio_Stagione_%' THEN 0 ELSE 1 END,
+          source_modified_at DESC,
+          imported_at DESC
     ) AS row_number
     FROM listone_snapshots
 )

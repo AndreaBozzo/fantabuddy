@@ -31,6 +31,20 @@ EXPECTED_HEADERS = (
     "FVM",
     "FVM M",
 )
+LEAGUE_EXPORT_HEADERS = (
+    "#",
+    "Nome",
+    "Fuori lista",
+    "Sq.",
+    "Under",
+    "R.",
+    "R.MANTRA",
+    "PGv",
+    "MV",
+    "FM",
+    "FVM/1000",
+    "QUOT.",
+)
 SEASON_PATTERN = re.compile(r"(?:Stagione[_ -])?(20\d{2})[_ -](\d{2,4})", re.IGNORECASE)
 
 
@@ -153,7 +167,51 @@ def _read_sheet(workbook: object, name: str, status: str) -> list[ListoneRecord]
     return records
 
 
-def read_listone(path: Path) -> ListoneImport:
+def _read_league_export(workbook: object, name: str) -> list[ListoneRecord]:
+    sheet = workbook[name]  # type: ignore[index]
+    headers = tuple(cell.value for cell in sheet[1])
+    if headers[: len(LEAGUE_EXPORT_HEADERS)] != LEAGUE_EXPORT_HEADERS:
+        raise ValueError(
+            f"schema inatteso nel foglio {name}: prefisso atteso "
+            f"{LEAGUE_EXPORT_HEADERS}, trovato {headers}"
+        )
+
+    records: list[ListoneRecord] = []
+    for row_number, values in enumerate(
+        sheet.iter_rows(min_row=2, max_col=len(LEAGUE_EXPORT_HEADERS), values_only=True),
+        start=2,
+    ):
+        if not any(value is not None for value in values):
+            continue
+        quote = _as_int(values[11], "QUOT.", row_number)
+        fvm = _as_int(values[10], "FVM/1000", row_number)
+        record = ListoneRecord(
+            fantacalcio_id=_as_int(values[0], "#", row_number),
+            classic_role=str(values[5]).strip(),
+            mantra_roles=str(values[6] or "").strip(),
+            name=str(values[1]).strip(),
+            team=str(values[3]).strip(),
+            quote_current=quote,
+            quote_initial=quote,
+            quote_diff=0,
+            mantra_quote_current=quote,
+            mantra_quote_initial=quote,
+            mantra_quote_diff=0,
+            fvm=fvm,
+            fvm_mantra=fvm,
+            status="ceduto" if values[2] not in (None, "") else "active",
+            source_sheet=name,
+            source_row=row_number,
+        )
+        if record.classic_role not in {"P", "D", "C", "A"}:
+            raise ValueError(
+                f"ruolo Classic non valido alla riga {row_number}: {record.classic_role}"
+            )
+        records.append(record)
+    return records
+
+
+def read_listone(path: Path, *, season_override: str | None = None) -> ListoneImport:
     path = path.expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(path)
@@ -162,15 +220,31 @@ def read_listone(path: Path) -> ListoneImport:
 
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
-        if tuple(workbook.sheetnames) != EXPECTED_SHEETS:
+        if tuple(workbook.sheetnames) == EXPECTED_SHEETS:
+            title = workbook["Tutti"].cell(row=1, column=1).value
+            season = infer_season(path, title)
+            records = _read_sheet(workbook, "Tutti", "active")
+            records.extend(_read_sheet(workbook, "Ceduti", "ceduto"))
+        elif len(workbook.sheetnames) == 1:
+            sheet_name = workbook.sheetnames[0]
+            try:
+                season = infer_season(path)
+            except ValueError:
+                if season_override is None:
+                    raise ValueError(
+                        f"impossibile ricavare la stagione da {path.name}; "
+                        "specificarla esplicitamente"
+                    ) from None
+                season = normalize_season(
+                    int(season_override.split("/", maxsplit=1)[0]),
+                    int(season_override.split("/", maxsplit=1)[1]),
+                )
+            records = _read_league_export(workbook, sheet_name)
+        else:
             raise ValueError(
                 f"fogli inattesi in {path.name}: attesi {EXPECTED_SHEETS}, "
                 f"trovati {workbook.sheetnames}"
             )
-        title = workbook["Tutti"].cell(row=1, column=1).value
-        season = infer_season(path, title)
-        records = _read_sheet(workbook, "Tutti", "active")
-        records.extend(_read_sheet(workbook, "Ceduti", "ceduto"))
     finally:
         workbook.close()
 

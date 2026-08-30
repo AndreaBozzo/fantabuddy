@@ -49,6 +49,18 @@ link diretto dietro al bottone *Scarica* di
 Funziona solo se sei loggato sul sito: da sloggato risponde 401 e non scarica niente.
 Salvalo dove vuoi, poi passi quella cartella a `--listoni-dir`.
 
+È supportato anche l'export a foglio singolo di una lega
+(`lista_calciatori_*.xlsx`). Se nella stessa giornata sono presenti entrambe le fonti,
+il listone ufficiale multi-foglio resta quella canonica; l'export di lega viene usato
+come riscontro indipendente. Poiché il suo filename non contiene la stagione, quando lo
+si importa da solo va indicata esplicitamente:
+
+```powershell
+uv run fantabuddy import-listoni `
+  "$env:USERPROFILE\Downloads\lista_calciatori_nome-lega.xlsx" `
+  --season "2026/27"
+```
+
 ```powershell
 uv sync --all-groups
 uv run fantabuddy run `
@@ -264,6 +276,31 @@ uv run fantabuddy run `
 ```
 
 Il checksum distingue la nuova versione e `diff.csv` riporta entrate, uscite e variazioni.
+
+Per un refresh completo subito dopo la chiusura del mercato, scaricare prima il nuovo
+listone ufficiale e poi aggiornare le fonti nell'ordine seguente (sostituire data e
+stagione quando necessario):
+
+```powershell
+uv run fantabuddy import-listoni `
+  "$env:USERPROFILE\Downloads\Quotazioni_Fantacalcio_Stagione_2026_27.xlsx"
+uv run fantabuddy ingest-squads --season-start 2026 --refresh
+uv run fantabuddy ingest-transfers --season-start 2026 --refresh
+uv run fantabuddy ingest-sidelined --season-start 2026 --refresh
+uv run fantabuddy ingest-injuries --season-start 2026 --refresh
+uv run fantabuddy ingest-fixtures --seasons "2026" --refresh --pause-ok
+uv run fantabuddy ingest-api --seasons "2026" --refresh --pause-ok
+uv run fantabuddy build-fixture-features
+uv run fantabuddy reconcile --season "2026/27" --mapping-csv config/mappings.manual.csv
+uv run fantabuddy search-mapping-gaps --season "2026/27"
+uv run fantabuddy reconcile --season "2026/27"
+uv run fantabuddy validate --season "2026/27"
+uv run fantabuddy build --season "2026/27" --as-of "2026-08-31" --kind preseason
+```
+
+Se `reconcile` esporta righe in `outputs/mapping-pending.csv`, verificarle e aggiungere
+le sole decisioni confermate a `config/mappings.manual.csv`: il build resta
+intenzionalmente bloccato finché ogni calciatore attivo non ha una decisione esplicita.
 
 </details>
 
