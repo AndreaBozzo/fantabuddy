@@ -7,6 +7,9 @@ perché al tavolo dell'asta il wifi è sempre una leggenda.
 
 È un progetto per hobby, nato per la mia lega — 10 squadre, 1000 crediti, rose
 3P/8D/8C/6A — ma sono tutti numeri che si cambiano in `config/league.default.yaml`.
+Il profilo predefinito resta volutamente generico: quando una regola non è nota viene
+mostrata come *non specificata*, senza inventare dettagli per chi vuole soltanto un
+report pronto da usare.
 
 📖 La storia per esteso: [Ho costruito un modello per il Fantacalcio](https://andreabozzo.github.io/AndreaBozzo/blog/posts/fantabuddy-blog/) ·
 [English version](https://andreabozzo.github.io/AndreaBozzo/blog/en/posts/fantabuddy-blog/)
@@ -71,6 +74,28 @@ uv run fantabuddy run `
 ```
 
 Il report finisce in `outputs/<build-id>/report.html`. Aprilo col browser e sei a posto.
+
+### Più leghe, stesso warehouse
+
+Per una seconda lega basta copiare il file YAML, cambiare i soli parametri conosciuti e
+scegliere una directory di output. Dati, modelli e mapping restano condivisi: non serve
+duplicare il warehouse né mantenere versioni diverse del codice.
+
+```powershell
+Copy-Item config/league.default.yaml config/league.amici.yaml
+uv run fantabuddy build `
+  --season "2026/27" `
+  --as-of "2026-09-01" `
+  --kind september `
+  --config config/league.amici.yaml `
+  --output-dir outputs/amici
+```
+
+`teams`, `budget`, rose, ripartizione e tetti per ruolo, base d'asta, fasce gol,
+modificatore difesa, bonus/malus, panchina, sostituzioni e regole di svincolo sono tutti
+configurabili. I campi amministrativi sconosciuti possono restare `null`. Le build di
+leghe diverse non si contaminano: il delta cerca prima l'ultimo snapshot con la stessa
+configurazione economica.
 
 Per collegare anche lo storico di API-Football — rose, minuti, infortuni, partite — serve
 una chiave del provider: la sezione **Setup completo** qui sotto spiega tutto.
@@ -240,8 +265,8 @@ fantabuddy search-mapping-gaps --season 2026/27
 fantabuddy reconcile --season 2026/27 [--mapping-csv mapping.csv]
 fantabuddy reconcile-all
 fantabuddy import-overrides config/overrides.csv
-fantabuddy build --season 2026/27 --as-of 2026-08-05 --kind preseason
-fantabuddy run --listoni-dir <cartella> --season 2026/27 --as-of <data>
+fantabuddy build --season 2026/27 --as-of 2026-08-05 --kind preseason [--config profilo.yaml]
+fantabuddy run --listoni-dir <cartella> --season 2026/27 --as-of <data> [--config profilo.yaml]
 ```
 
 Un abbinamento basato sulla sola somiglianza tra stringhe non viene mai approvato
@@ -330,3 +355,12 @@ uv run pytest --cov=fantabuddy
 
 Il notebook `notebooks/auction_report.ipynb` è un ingresso parametrico alternativo per
 rigenerare l'HTML di una build già presente nel warehouse.
+
+## Community
+
+Domande, racconti d'asta e idee ancora aperte stanno nelle
+[GitHub Discussions](https://github.com/AndreaBozzo/fantabuddy/discussions). Per bug
+riproducibili e proposte già definite usa i template delle
+[issue](https://github.com/AndreaBozzo/fantabuddy/issues/new/choose); per contribuire
+parti da [CONTRIBUTING.md](CONTRIBUTING.md). Le vulnerabilità vanno segnalate in privato
+seguendo [SECURITY.md](SECURITY.md).

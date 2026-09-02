@@ -680,10 +680,11 @@ def _capped_allocation(total: int, weights: list[float], capacities: list[int]) 
 
 
 def allocate_prices(projections: list[Projection], config: LeagueConfig) -> None:
-    base_budget = config.total_slots
+    min_bid = config.auction.min_bid
+    base_budget = config.total_slots * min_bid
     extra_budget = config.total_budget - base_budget
     if extra_budget < 0:
-        raise ValueError("budget insufficiente per garantire un credito a ogni slot")
+        raise ValueError("budget insufficiente per garantire la base d'asta a ogni slot")
     role_extras = _largest_remainder(
         extra_budget, [config.role_budget_shares[role] for role in ROLES]
     )
@@ -702,10 +703,10 @@ def allocate_prices(projections: list[Projection], config: LeagueConfig) -> None
             for projection in rosterable
         ]
         cap = config.player_price_caps[role]
-        extras = _capped_allocation(role_extra, weights, [cap - 1] * len(rosterable))
+        extras = _capped_allocation(role_extra, weights, [cap - min_bid] * len(rosterable))
         for rank, (projection, extra) in enumerate(zip(rosterable, extras, strict=True), start=1):
             projection.rosterable = True
-            projection.suggested_credits = 1 + extra
+            projection.suggested_credits = min_bid + extra
             percentile = rank / required
             projection.tier = (
                 "S"
@@ -720,7 +721,7 @@ def allocate_prices(projections: list[Projection], config: LeagueConfig) -> None
             )
         for projection in candidates[required:]:
             projection.rosterable = False
-            projection.suggested_credits = 1
+            projection.suggested_credits = min_bid
             projection.tier = "E"
 
     rosterable_total = sum(

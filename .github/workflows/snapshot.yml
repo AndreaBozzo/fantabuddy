@@ -17,6 +17,10 @@ on:
         description: "preseason, september o benchmark"
         required: true
         default: "preseason"
+      league_config:
+        description: "Profilo YAML versionato, es. config/league.default.yaml"
+        required: true
+        default: "config/league.default.yaml"
       api_seasons:
         description: "Opzionale: anni API separati da virgola"
         required: false
@@ -80,7 +84,15 @@ jobs:
       - name: Riconcilia stagioni
         run: uv run fantabuddy reconcile-all
       - name: Crea snapshot
-        run: uv run fantabuddy build --season "${{ inputs.season }}" --as-of "${{ inputs.as_of }}" --kind "${{ inputs.snapshot_kind }}"
+        env:
+          LEAGUE_CONFIG: ${{ inputs.league_config }}
+        run: |
+          test -f "$LEAGUE_CONFIG"
+          uv run fantabuddy build \
+            --season "${{ inputs.season }}" \
+            --as-of "${{ inputs.as_of }}" \
+            --kind "${{ inputs.snapshot_kind }}" \
+            --config "$LEAGUE_CONFIG"
       - uses: actions/upload-artifact@v4
         with:
           name: fantabuddy-${{ inputs.season }}-${{ inputs.as_of }}

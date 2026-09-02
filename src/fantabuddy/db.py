@@ -446,7 +446,9 @@ FROM (
     SELECT *, row_number() OVER (
         PARTITION BY season ORDER BY
           CAST(source_modified_at AS DATE) DESC,
-          CASE WHEN source_filename LIKE 'Quotazioni_Fantacalcio_Stagione_%' THEN 0 ELSE 1 END,
+          CASE WHEN source_filename LIKE 'Quotazioni_Fantacalcio_Stagione_%'
+                     OR source_filename LIKE 'quotazioni-%.html'
+               THEN 0 ELSE 1 END,
           source_modified_at DESC,
           imported_at DESC
     ) AS row_number

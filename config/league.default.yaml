@@ -26,4 +26,26 @@ league:
     penalty_missed: -3.0
     penalty_saved: 3.0
     goal_conceded: -1.0
+    clean_sheet: 0.0
+
+  # Le regole non note possono restare null: il report le dichiara come non specificate.
+  goal_bands:
+    first_goal: 66
+    step: 4
+  auction:
+    min_bid: 1
+    random_by_role: null
+    repair_release_slots: null
+    voluntary_release_refund_share: null
+    transferred_player_full_refund: null
+    long_injury_replacement: null
+  lineup:
+    captain: null
+    max_bench_players: null
+    substitutions: 5
+
+  rules_source: "Profilo Classic generico: sono dichiarate solo le regole note"
+  strategy_notes:
+    - "Le fasce S/A/B/C/D dividono ogni ruolo per profondità d'asta; E indica i giocatori fuori dal pool atteso."
+    - "I crediti sono riferimenti comparativi sul budget totale della lega, non tetti automatici per la singola rosa."
   price_curve_gamma: 1.15

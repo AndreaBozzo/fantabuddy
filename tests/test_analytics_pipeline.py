@@ -9,7 +9,7 @@ from fantabuddy.analytics import allocate_prices, persist_build, train_and_proje
 from fantabuddy.config import LeagueConfig
 from fantabuddy.db import database, ingest_listone
 from fantabuddy.excel import read_listone
-from fantabuddy.report import _availability_category, export_build
+from fantabuddy.report import _availability_category, build_diff, export_build
 
 
 def _records(season_index: int) -> list[dict[str, object]]:
@@ -67,6 +67,7 @@ def test_end_to_end_build_includes_newcomers_and_reconciles_budget(tmp_path: Pat
             roster={"P": 1, "D": 2, "C": 2, "A": 1},
             role_budget_shares={"P": 0.1, "D": 0.2, "C": 0.3, "A": 0.4},
             player_price_caps={"P": 30, "D": 30, "C": 50, "A": 80},
+            auction={"min_bid": 2},
         )
         allocate_prices(projections, config)
         assert sum(item.suggested_credits for item in projections if item.rosterable) == 200
@@ -76,6 +77,7 @@ def test_end_to_end_build_includes_newcomers_and_reconciles_budget(tmp_path: Pat
             for item in projections
             if item.rosterable
         )
+        assert all(item.suggested_credits >= 2 for item in projections)
 
         build_id = persist_build(
             connection,
@@ -88,6 +90,21 @@ def test_end_to_end_build_includes_newcomers_and_reconciles_budget(tmp_path: Pat
             code_version="test",
         )
         result = export_build(connection, build_id, tmp_path / "outputs")
+
+        # An interleaved build for another league must not replace the comparable
+        # snapshot used by the next build of this league.
+        other_config = config.model_copy(update={"budget": 120})
+        allocate_prices(projections, other_config)
+        persist_build(
+            connection,
+            season="2026/27",
+            as_of=date(2026, 9, 1),
+            snapshot_kind="september",
+            config=other_config,
+            projections=projections,
+            metrics=metrics,
+            code_version="test-other-league",
+        )
 
         updated_records = _records(4)
         updated_records[0]["quote_current"] = 30
@@ -121,6 +138,18 @@ def test_end_to_end_build_includes_newcomers_and_reconciles_budget(tmp_path: Pat
             code_version="test",
         )
         september_result = export_build(connection, september_id, tmp_path / "outputs")
+        september_diff = build_diff(connection, september_id)
+        rerun_id = persist_build(
+            connection,
+            season="2026/27",
+            as_of=date(2026, 9, 15),
+            snapshot_kind="september",
+            config=config,
+            projections=september_projections,
+            metrics=september_metrics,
+            code_version="test-rerun",
+        )
+        rerun_diff = build_diff(connection, rerun_id)
 
     output = Path(result["output_dir"])
     assert (output / "report.html").is_file()
@@ -140,10 +169,16 @@ def test_end_to_end_build_includes_newcomers_and_reconciles_budget(tmp_path: Pat
     assert 'id="signal"' in report
     assert "const DATA=[{" in report
     assert "&#34;fantacalcio_id&#34;" not in report
+    assert "S · top 10%" in report
+    assert "panchina non specificata" in report
+    assert ">None<" not in report
     september_output = Path(september_result["output_dir"])
     diff = (september_output / "diff.csv").read_text(encoding="utf-8")
     assert "Nuovo settembre" in diff
     assert "aggiornato" in diff or "nuovo" in diff
+    changed_first_player = next(row for row in september_diff if row["fantacalcio_id"] == 1)
+    assert changed_first_player["old_credits"] is not None
+    assert any(row["name"] == "Nuovo settembre" for row in rerun_diff)
 
 
 def test_availability_categories_separate_non_injury_signals() -> None:

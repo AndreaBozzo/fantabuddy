@@ -1,0 +1,53 @@
+name: Segnala un bug
+description: Un comportamento riproducibile che non funziona come previsto
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Grazie! Non allegare chiavi API, listoni privati o warehouse reali."
+  - type: textarea
+    id: description
+    attributes:
+      label: Cosa è successo?
+      description: Descrivi risultato osservato e risultato atteso.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Come riprodurlo
+      description: Includi il comando usato e un esempio minimo, rimuovendo dati privati.
+      placeholder: |
+        1. Eseguo ...
+        2. Apro ...
+        3. Osservo ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Versione o commit
+      placeholder: v0.3.0 oppure SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: Sistema operativo
+      options: [Windows, macOS, Linux, Altro]
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log rilevanti
+      description: Incolla solo il frammento utile, dopo aver rimosso segreti e percorsi personali.
+      render: shell
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Controllo privacy
+      options:
+        - label: Ho rimosso chiavi API e dati privati.
+          required: true

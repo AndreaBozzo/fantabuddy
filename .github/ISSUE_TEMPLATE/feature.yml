@@ -1,0 +1,31 @@
+name: Proponi un miglioramento
+description: Un'idea per rendere Fantabuddy più utile o semplice
+title: "[Idea]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Quale problema risolve?
+      description: Racconta il caso d'uso prima della soluzione.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposta
+      description: Come dovrebbe funzionare dal punto di vista di chi usa il progetto?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative considerate
+      description: Facoltativo; indica workaround o compromessi già provati.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Perimetro
+      options:
+        - label: La proposta non richiede di pubblicare dati o credenziali della mia lega.
+          required: true
