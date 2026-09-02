@@ -8,8 +8,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
         with:
           python-version: "3.12"
           enable-cache: true
@@ -17,4 +17,3 @@ jobs:
       - run: uv run ruff check .
       - run: uv run mypy src
       - run: uv run pytest --cov=fantabuddy --cov-report=term-missing
-

@@ -31,8 +31,8 @@ jobs:
       HISTORY_START: ${{ inputs.history_start || '2021' }}
       HISTORY_END: ${{ inputs.history_end || '2025' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
         with:
           python-version: "3.12"
           enable-cache: true
