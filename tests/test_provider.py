@@ -11,11 +11,17 @@ from fantabuddy.db import database
 from fantabuddy.provider import (
     ApiFootballClient,
     DailyQuotaGuard,
+    archive_recorded_raw_responses,
     ingest_fixture_history,
     ingest_injuries,
+    ingest_player_profiles,
+    ingest_player_team_history,
+    ingest_player_transfers,
     ingest_sidelined_history,
     ingest_squads,
     ingest_team_transfers,
+    record_raw_response,
+    verify_recorded_raw_responses,
 )
 
 
@@ -59,6 +65,131 @@ def test_cache_avoids_second_network_call(tmp_path: Path) -> None:
     assert calls == ["/status", "/leagues"]
     with __import__("gzip").open(cache_path, "rt", encoding="utf-8") as stream:
         assert json.load(stream)["results"] == 1
+
+
+def test_raw_responses_are_archived_by_content_across_refreshes(tmp_path: Path) -> None:
+    version = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal version
+        if request.url.path == "/status":
+            return httpx.Response(200, json=_status())
+        version += 1
+        return httpx.Response(200, json=_api_body([version]))
+
+    with (
+        database(tmp_path / "db.duckdb") as connection,
+        ApiFootballClient(
+            tmp_path / "cache", api_key="test-key", transport=httpx.MockTransport(handler)
+        ) as client,
+    ):
+        for refresh in (False, True):
+            body, cache_path, _ = client.get("/players", {"id": 99}, refresh=refresh)
+            record_raw_response(
+                connection,
+                endpoint="/players",
+                params={"id": 99},
+                body=body,
+                cache_path=cache_path,
+            )
+        rows = connection.execute(
+            """
+            SELECT payload_path, payload_available, payload_storage_key
+            FROM api_raw_responses ORDER BY requested_at
+            """
+        ).fetchall()
+        migration = archive_recorded_raw_responses(connection)
+
+    assert len(rows) == 2
+    assert all(Path(path).parent.name == "_history" for path, _, _ in rows)
+    assert all(available for _, available, _ in rows)
+    assert all(not Path(storage_key).is_absolute() for _, _, storage_key in rows)
+    assert len({path for path, _, _ in rows}) == 2
+    assert all(Path(path).is_file() for path, _, _ in rows)
+    assert migration["already_archived"] == 2
+
+
+def test_player_backfill_resumes_past_cached_ids_after_quota_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("fantabuddy.provider.time.sleep", lambda _: None)
+    network_player_ids: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/status":
+            return httpx.Response(200, json=_status(limit=3))
+        network_player_ids.append(int(request.url.params["player"]))
+        return httpx.Response(
+            200,
+            json=_api_body([]),
+            headers={"x-ratelimit-requests-remaining": "2"},
+        )
+
+    db_path = tmp_path / "db.duckdb"
+    cache_path = tmp_path / "cache"
+    with database(db_path) as connection:
+        with ApiFootballClient(
+            cache_path,
+            api_key="test-key",
+            daily_reserve=1,
+            transport=httpx.MockTransport(handler),
+        ) as first_client:
+            first_client.status()
+            first = ingest_player_profiles(
+                connection, first_client, [1, 2, 3], workers=1, daily_reserve=1
+            )
+        with ApiFootballClient(
+            cache_path,
+            api_key="test-key",
+            daily_reserve=1,
+            transport=httpx.MockTransport(handler),
+        ) as second_client:
+            second_client.status()
+            second = ingest_player_profiles(
+                connection, second_client, [1, 2, 3], workers=1, daily_reserve=1
+            )
+
+    assert first["processed"] == 2
+    assert first["deferred"] == 1
+    assert first["network_calls"] == 2
+    assert second["processed"] == 3
+    assert second["deferred"] == 0
+    assert second["network_calls"] == 1
+    assert network_player_ids == [1, 2, 3]
+
+
+def test_raw_archive_can_be_verified_after_cache_directory_moves(tmp_path: Path) -> None:
+    original_cache = tmp_path / "original-cache"
+    db_path = tmp_path / "db.duckdb"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/status":
+            return httpx.Response(200, json=_status())
+        return httpx.Response(200, json=_api_body([{"id": 99}]))
+
+    with (
+        database(db_path) as connection,
+        ApiFootballClient(
+            original_cache, api_key="test-key", transport=httpx.MockTransport(handler)
+        ) as client,
+    ):
+        body, cache_path, _ = client.get("/players/profiles", {"player": 99})
+        record_raw_response(
+            connection,
+            endpoint="/players/profiles",
+            params={"player": 99},
+            body=body,
+            cache_path=cache_path,
+        )
+
+    moved_cache = tmp_path / "moved-cache"
+    original_cache.rename(moved_cache)
+    with database(db_path) as connection:
+        result = verify_recorded_raw_responses(connection, cache_dir=moved_cache)
+
+    assert result["verified"] == 1
+    assert result["missing_or_unreadable"] == 0
+    assert result["checksum_mismatch"] == 0
 
 
 def test_daily_reserve_blocks_network_call(tmp_path: Path) -> None:
@@ -510,6 +641,12 @@ def test_transfer_and_sidelined_context_is_idempotent(
     ):
         transfers = ingest_team_transfers(connection, client, 2026, team_ids=[10])
         cached_transfers = ingest_team_transfers(connection, client, 2026, team_ids=[10])
+        player_transfers = ingest_player_transfers(
+            connection, client, [99, 100], daily_reserve=10
+        )
+        cached_player_transfers = ingest_player_transfers(
+            connection, client, [99, 100], daily_reserve=10
+        )
         sidelined = ingest_sidelined_history(connection, client, [99, 100])
         cached_sidelined = ingest_sidelined_history(connection, client, [99, 100])
         transfer_row = connection.execute(
@@ -522,9 +659,76 @@ def test_transfer_and_sidelined_context_is_idempotent(
     assert transfers["network_calls"] == 1
     assert cached_transfers["network_calls"] == 0
     assert transfers["stored_rows"] == cached_transfers["stored_rows"] == 1
+    assert player_transfers["network_calls"] == 2, player_transfers
+    assert cached_player_transfers["network_calls"] == 0
+    assert player_transfers["failures"] == cached_player_transfers["failures"] == 0
     assert transfer_row == (99, "Permanent", 10, 20)
     assert sidelined["network_calls"] == 1
     assert cached_sidelined["network_calls"] == 0
     assert sidelined["stored_rows"] == cached_sidelined["stored_rows"] == 1
     assert sidelined_row[:3] == (99, "Muscle Injury", date(2025, 1, 1))
     assert sidelined_row[3] is None
+
+
+def test_exact_profiles_and_team_history_tolerate_missing_seasons(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("fantabuddy.provider.time.sleep", lambda _: None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/status":
+            return httpx.Response(200, json=_status())
+        if request.url.path == "/players/profiles":
+            return httpx.Response(
+                200,
+                json=_api_body(
+                    [
+                        {
+                            "player": {
+                                "id": 99,
+                                "name": "Test Player",
+                                "firstname": "Test",
+                                "lastname": "Player",
+                                "birth": {"date": "2000-01-01"},
+                                "nationality": "Italy",
+                                "height": "180 cm",
+                                "weight": "75 kg",
+                            }
+                        }
+                    ]
+                ),
+            )
+        assert request.url.path == "/players/teams"
+        return httpx.Response(
+            200,
+            json=_api_body(
+                [{"team": {"id": 10, "name": "Inter"}, "seasons": [2025, ""]}]
+            ),
+        )
+
+    with (
+        database(tmp_path / "db.duckdb") as connection,
+        ApiFootballClient(
+            tmp_path / "cache", api_key="test-key", transport=httpx.MockTransport(handler)
+        ) as client,
+    ):
+        client.status()
+        profiles = ingest_player_profiles(
+            connection, client, [99], workers=1, daily_reserve=10
+        )
+        teams = ingest_player_team_history(
+            connection, client, [99], workers=1, daily_reserve=10
+        )
+        profile_row = connection.execute(
+            "SELECT api_player_id, birth_date FROM api_player_profiles WHERE api_player_id = 99"
+        ).fetchone()
+        team_rows = connection.execute(
+            "SELECT api_player_id, team_id, season_start FROM api_player_team_history"
+        ).fetchall()
+
+    assert profiles["profiles"] == 1
+    assert profiles["failures"] == 0
+    assert teams["normalized_rows"] == 1
+    assert teams["failures"] == 0
+    assert profile_row == (99, date(2000, 1, 1))
+    assert team_rows == [(99, 10, 2025)]

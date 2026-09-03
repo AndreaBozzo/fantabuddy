@@ -133,8 +133,7 @@ class ApiFootballClient:
         refresh: bool = False,
     ) -> tuple[dict[str, Any], Path, bool]:
         params = dict(params or {})
-        key = _cache_key(endpoint, params)
-        cache_path = self.cache_dir / endpoint.strip("/").replace("/", "-") / f"{key}.json.gz"
+        cache_path = self.cache_path(endpoint, params)
         if cache_path.exists() and not refresh:
             with gzip.open(cache_path, "rt", encoding="utf-8") as stream:
                 return json.load(stream), cache_path, True
@@ -158,6 +157,14 @@ class ApiFootballClient:
             json.dump(body, stream, ensure_ascii=False, separators=(",", ":"))
         return body, cache_path, False
 
+    def cache_path(self, endpoint: str, params: dict[str, object] | None = None) -> Path:
+        params = dict(params or {})
+        key = _cache_key(endpoint, params)
+        return self.cache_dir / endpoint.strip("/").replace("/", "-") / f"{key}.json.gz"
+
+    def is_cached(self, endpoint: str, params: dict[str, object] | None = None) -> bool:
+        return self.cache_path(endpoint, params).is_file()
+
 
 def record_raw_response(
     connection: duckdb.DuckDBPyConnection,
@@ -170,11 +177,26 @@ def record_raw_response(
     payload = _stable_json(body)
     payload_sha = hashlib.sha256(payload.encode()).hexdigest()
     response_id = _cache_key(endpoint, {**params, "payload_sha": payload_sha})
+    archive_path = cache_path.parent / "_history" / f"{payload_sha}.json.gz"
+    storage_key = (Path(cache_path.parent.name) / "_history" / archive_path.name).as_posix()
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with archive_path.open("xb") as raw_stream:
+            with gzip.GzipFile(fileobj=raw_stream, mode="wb", mtime=0) as stream:
+                stream.write(payload.encode("utf-8"))
+    except FileExistsError:
+        pass
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
     paging = body.get("paging") or {}
     connection.execute(
         """
-        INSERT OR IGNORE INTO api_raw_responses
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO api_raw_responses (
+          response_id, endpoint, parameters_json, requested_at, payload_sha256,
+          payload_path, result_count, page, total_pages, payload_available, archive_note,
+          payload_storage_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, NULL, ?)
         """,
         [
             response_id,
@@ -182,12 +204,182 @@ def record_raw_response(
             _stable_json(params),
             datetime.now(tz=UTC),
             payload_sha,
-            str(cache_path),
+            str(archive_path),
             int(body.get("results") or 0),
             int(paging.get("current") or 1),
             int(paging.get("total") or 1),
+            storage_key,
         ],
     )
+    connection.execute(
+        """
+        UPDATE api_raw_responses
+        SET payload_path = ?, payload_available = TRUE, archive_note = NULL,
+            payload_storage_key = ?
+        WHERE response_id = ?
+        """,
+        [str(archive_path), storage_key, response_id],
+    )
+
+
+def archive_recorded_raw_responses(
+    connection: duckdb.DuckDBPyConnection,
+    cache_dir: Path | None = None,
+) -> dict[str, int]:
+    """Materializza i payload legacy ancora verificabili e segnala quelli sovrascritti."""
+    rows = connection.execute(
+        """
+        SELECT response_id, payload_sha256, payload_path, payload_storage_key
+        FROM api_raw_responses
+        """
+    ).fetchall()
+    archived = 0
+    already_archived = 0
+    unavailable = 0
+    for response_id, expected_sha, stored_path, storage_key in rows:
+        source_path = _resolve_raw_payload_path(stored_path, storage_key, cache_dir)
+        try:
+            with gzip.open(source_path, "rt", encoding="utf-8") as stream:
+                body = json.load(stream)
+        except (OSError, json.JSONDecodeError):
+            connection.execute(
+                """
+                UPDATE api_raw_responses
+                SET payload_available = FALSE,
+                    archive_note = 'payload legacy mancante o illeggibile'
+                WHERE response_id = ?
+                """,
+                [response_id],
+            )
+            unavailable += 1
+            continue
+        payload = _stable_json(body)
+        actual_sha = hashlib.sha256(payload.encode()).hexdigest()
+        if actual_sha != expected_sha:
+            connection.execute(
+                """
+                UPDATE api_raw_responses
+                SET payload_available = FALSE,
+                    archive_note = 'cache sovrascritta prima dell archivio immutabile'
+                WHERE response_id = ?
+                """,
+                [response_id],
+            )
+            unavailable += 1
+            continue
+        if source_path.parent.name == "_history":
+            storage_key = (
+                Path(source_path.parent.parent.name) / "_history" / source_path.name
+            ).as_posix()
+            connection.execute(
+                """
+                UPDATE api_raw_responses
+                SET payload_path = ?, payload_available = TRUE, archive_note = NULL,
+                    payload_storage_key = ?
+                WHERE response_id = ?
+                """,
+                [str(source_path), storage_key, response_id],
+            )
+            already_archived += 1
+            continue
+        archive_path = source_path.parent / "_history" / f"{expected_sha}.json.gz"
+        storage_key = (Path(source_path.parent.name) / "_history" / archive_path.name).as_posix()
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        if not archive_path.exists():
+            with archive_path.open("xb") as raw_stream:
+                with gzip.GzipFile(fileobj=raw_stream, mode="wb", mtime=0) as stream:
+                    stream.write(payload.encode("utf-8"))
+        connection.execute(
+            """
+            UPDATE api_raw_responses
+            SET payload_path = ?, payload_available = TRUE, archive_note = NULL,
+                payload_storage_key = ?
+            WHERE response_id = ?
+            """,
+            [str(archive_path), storage_key, response_id],
+        )
+        archived += 1
+    return {
+        "rows": len(rows),
+        "archived": archived,
+        "already_archived": already_archived,
+        "unavailable": unavailable,
+    }
+
+
+def _resolve_raw_payload_path(
+    stored_path: object,
+    storage_key: object,
+    cache_dir: Path | None,
+) -> Path:
+    path = Path(str(stored_path))
+    if path.is_file() or cache_dir is None or not storage_key:
+        return path
+    return cache_dir.expanduser().resolve() / Path(str(storage_key))
+
+
+def verify_recorded_raw_responses(
+    connection: duckdb.DuckDBPyConnection,
+    cache_dir: Path | None = None,
+) -> dict[str, int]:
+    """Verifica presenza e checksum, risolvendo anche storage key relative e spostabili."""
+    rows = connection.execute(
+        """
+        SELECT payload_sha256, payload_path, payload_storage_key, payload_available
+        FROM api_raw_responses
+        """
+    ).fetchall()
+    verified = 0
+    missing = 0
+    checksum_mismatch = 0
+    declared_unavailable = 0
+    for expected_sha, stored_path, storage_key, available in rows:
+        if not available:
+            declared_unavailable += 1
+            continue
+        path = _resolve_raw_payload_path(stored_path, storage_key, cache_dir)
+        try:
+            with gzip.open(path, "rt", encoding="utf-8") as stream:
+                payload = _stable_json(json.load(stream))
+        except (OSError, json.JSONDecodeError):
+            missing += 1
+            continue
+        actual_sha = hashlib.sha256(payload.encode()).hexdigest()
+        if actual_sha == expected_sha:
+            verified += 1
+        else:
+            checksum_mismatch += 1
+    return {
+        "rows": len(rows),
+        "declared_available": len(rows) - declared_unavailable,
+        "verified": verified,
+        "missing_or_unreadable": missing,
+        "checksum_mismatch": checksum_mismatch,
+        "declared_unavailable": declared_unavailable,
+    }
+
+
+def _select_cached_and_budgeted_player_ids(
+    client: ApiFootballClient,
+    endpoint: str,
+    player_ids: list[int],
+    daily_reserve: int,
+) -> tuple[list[int], int]:
+    """Include tutta la cache e limita soltanto le richieste che consumano quota."""
+    unique_ids = sorted({player_id for player_id in player_ids if player_id > 0})
+    cached_ids = [
+        player_id
+        for player_id in unique_ids
+        if client.is_cached(endpoint, {"player": player_id})
+    ]
+    cached_set = set(cached_ids)
+    uncached_ids = [player_id for player_id in unique_ids if player_id not in cached_set]
+    if client.remaining is None:
+        client.status()
+    remaining = client.remaining or 0
+    network_budget = max(0, remaining - max(daily_reserve, client.daily_reserve))
+    selected_uncached = uncached_ids[:network_budget]
+    return sorted([*cached_ids, *selected_uncached]), len(uncached_ids) - len(selected_uncached)
 
 
 def _int_or_none(value: object) -> int | None:
@@ -535,6 +727,175 @@ def ingest_injuries(
         "rows": len(rows),
         "network_calls": int(not cached),
         "pages": 1,
+    }
+
+
+def ingest_player_profiles(
+    connection: duckdb.DuckDBPyConnection,
+    client: ApiFootballClient,
+    player_ids: list[int],
+    *,
+    workers: int = 4,
+    daily_reserve: int = 100,
+) -> dict[str, object]:
+    """Acquisisce profili anagrafici esatti per ID, senza ricerche ambigue per nome."""
+    unique_ids = sorted({player_id for player_id in player_ids if player_id > 0})
+    selected, deferred = _select_cached_and_budgeted_player_ids(
+        client, "/players/profiles", unique_ids, daily_reserve
+    )
+    network_calls = 0
+    profiles = 0
+    failures = 0
+    failure_details: list[str] = []
+
+    def fetch(player_id: int) -> tuple[int, dict[str, Any], Path, bool]:
+        body, cache_path, cached = client.get("/players/profiles", {"player": player_id})
+        return player_id, body, cache_path, cached
+
+    futures: dict[Future[tuple[int, dict[str, Any], Path, bool]], int] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for player_id in selected:
+            futures[executor.submit(fetch, player_id)] = player_id
+        for future in as_completed(futures):
+            player_id = futures[future]
+            try:
+                _, body, cache_path, cached = future.result()
+                network_calls += int(not cached)
+                record_raw_response(
+                    connection,
+                    endpoint="/players/profiles",
+                    params={"player": player_id},
+                    body=body,
+                    cache_path=cache_path,
+                )
+                rows: list[tuple[object, ...]] = []
+                for entry in body.get("response") or []:
+                    player = entry.get("player") or entry
+                    birth = player.get("birth") or {}
+                    rows.append(
+                        (
+                            int(player["id"]),
+                            str(player.get("name") or ""),
+                            player.get("firstname"),
+                            player.get("lastname"),
+                            birth.get("date"),
+                            player.get("nationality"),
+                            player.get("height"),
+                            player.get("weight"),
+                            datetime.now(tz=UTC),
+                        )
+                    )
+                _bulk_insert(
+                    connection,
+                    "api_player_profiles",
+                    (
+                        "api_player_id",
+                        "player_name",
+                        "first_name",
+                        "last_name",
+                        "birth_date",
+                        "nationality",
+                        "height",
+                        "weight",
+                        "updated_at",
+                    ),
+                    rows,
+                    replace=True,
+                )
+                profiles += len(rows)
+            except Exception as exc:
+                failures += 1
+                if len(failure_details) < 10:
+                    failure_details.append(f"{player_id}: {exc}")
+    return {
+        "players": len(unique_ids),
+        "processed": len(selected),
+        "deferred": deferred,
+        "failures": failures,
+        "failure_sample": failure_details,
+        "profiles": profiles,
+        "network_calls": network_calls,
+    }
+
+
+def ingest_player_team_history(
+    connection: duckdb.DuckDBPyConnection,
+    client: ApiFootballClient,
+    player_ids: list[int],
+    *,
+    workers: int = 4,
+    daily_reserve: int = 100,
+) -> dict[str, object]:
+    """Acquisisce le squadre e stagioni di carriera dichiarate dal provider."""
+    unique_ids = sorted({player_id for player_id in player_ids if player_id > 0})
+    selected, deferred = _select_cached_and_budgeted_player_ids(
+        client, "/players/teams", unique_ids, daily_reserve
+    )
+    network_calls = 0
+    normalized_rows = 0
+    failures = 0
+    failure_details: list[str] = []
+
+    def fetch(player_id: int) -> tuple[int, dict[str, Any], Path, bool]:
+        body, cache_path, cached = client.get("/players/teams", {"player": player_id})
+        return player_id, body, cache_path, cached
+
+    futures: dict[Future[tuple[int, dict[str, Any], Path, bool]], int] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for player_id in selected:
+            futures[executor.submit(fetch, player_id)] = player_id
+        for future in as_completed(futures):
+            player_id = futures[future]
+            try:
+                _, body, cache_path, cached = future.result()
+                network_calls += int(not cached)
+                record_raw_response(
+                    connection,
+                    endpoint="/players/teams",
+                    params={"player": player_id},
+                    body=body,
+                    cache_path=cache_path,
+                )
+                observed_at = datetime.now(tz=UTC)
+                rows: list[tuple[object, ...]] = [
+                    (
+                        player_id,
+                        int(entry["team"]["id"]),
+                        str(entry["team"].get("name") or ""),
+                        int(season),
+                        observed_at,
+                    )
+                    for entry in body.get("response") or []
+                    if (entry.get("team") or {}).get("id")
+                    for season in entry.get("seasons") or []
+                    if season not in (None, "")
+                ]
+                _bulk_insert(
+                    connection,
+                    "api_player_team_history",
+                    (
+                        "api_player_id",
+                        "team_id",
+                        "team_name",
+                        "season_start",
+                        "observed_at",
+                    ),
+                    rows,
+                    replace=True,
+                )
+                normalized_rows += len(rows)
+            except Exception as exc:
+                failures += 1
+                if len(failure_details) < 10:
+                    failure_details.append(f"{player_id}: {exc}")
+    return {
+        "players": len(unique_ids),
+        "processed": len(selected),
+        "deferred": deferred,
+        "failures": failures,
+        "failure_sample": failure_details,
+        "normalized_rows": normalized_rows,
+        "network_calls": network_calls,
     }
 
 
@@ -1379,6 +1740,70 @@ def ingest_team_transfers(
     return {
         "season": season_start,
         "teams": len(set(team_ids)),
+        "normalized_rows": normalized_rows,
+        "stored_rows": int(stored_row[0]) if stored_row else 0,
+        "network_calls": network_calls,
+    }
+
+
+def ingest_player_transfers(
+    connection: duckdb.DuckDBPyConnection,
+    client: ApiFootballClient,
+    player_ids: list[int],
+    *,
+    workers: int = 4,
+    daily_reserve: int = 100,
+) -> dict[str, object]:
+    """Acquisisce lo storico trasferimenti per una coorte, riprendendo dalla cache."""
+    unique_ids = sorted({player_id for player_id in player_ids if player_id > 0})
+    selected, deferred = _select_cached_and_budgeted_player_ids(
+        client, "/transfers", unique_ids, daily_reserve
+    )
+    network_calls = 0
+    normalized_rows = 0
+    failures = 0
+    failure_details: list[str] = []
+
+    def fetch(player_id: int) -> tuple[int, dict[str, Any], Path, bool]:
+        body, cache_path, cached = client.get("/transfers", {"player": player_id})
+        return player_id, body, cache_path, cached
+
+    futures: dict[Future[tuple[int, dict[str, Any], Path, bool]], int] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for player_id in selected:
+            futures[executor.submit(fetch, player_id)] = player_id
+        for future in as_completed(futures):
+            player_id = futures[future]
+            try:
+                _, body, cache_path, cached = future.result()
+                network_calls += int(not cached)
+                record_raw_response(
+                    connection,
+                    endpoint="/transfers",
+                    params={"player": player_id},
+                    body=body,
+                    cache_path=cache_path,
+                )
+                rows = normalize_transfer_entries(list(body.get("response") or []))
+                _bulk_insert(
+                    connection,
+                    "api_player_transfers",
+                    PLAYER_TRANSFER_COLUMNS,
+                    rows,
+                    replace=True,
+                )
+                normalized_rows += len(rows)
+            except Exception as exc:
+                failures += 1
+                if len(failure_details) < 10:
+                    failure_details.append(f"{player_id}: {exc}")
+    stored_row = connection.execute("SELECT count(*) FROM api_player_transfers").fetchone()
+    return {
+        "players": len(unique_ids),
+        "processed": len(selected),
+        "deferred": deferred,
+        "failures": failures,
+        "failure_sample": failure_details,
         "normalized_rows": normalized_rows,
         "stored_rows": int(stored_row[0]) if stored_row else 0,
         "network_calls": network_calls,

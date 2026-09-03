@@ -189,6 +189,8 @@ uv run fantabuddy ingest-fixtures --seasons "2021,2022,2023,2024,2025"
 uv run fantabuddy build-fixture-features
 uv run fantabuddy ingest-transfers --season-start 2026
 uv run fantabuddy ingest-sidelined --season-start 2026
+uv run fantabuddy ingest-player-teams
+uv run fantabuddy ingest-player-profiles
 uv run fantabuddy reconcile-all
 uv run fantabuddy reconcile --season "2026/27"
 uv run fantabuddy backfill-careers --target-season-start 2026 --history-start 2021 --history-end 2025 --cohort current
@@ -200,6 +202,26 @@ competizioni disponibili, anche estere e Serie B. Le coppie complete o senza pre
 sono marcate esplicitamente; una nuova esecuzione scarica soltanto il delta.
 `--refresh` ignora intenzionalmente la cache e va usato soltanto per aggiornare dati già
 acquisiti.
+
+Per trasformare il warehouse in un corpus personale riutilizzabile, i payload grezzi
+sono archiviati per checksum e non vengono sovrascritti dai refresh. Ogni record
+conserva anche una storage key relativa, così cache e warehouse possono essere spostati
+insieme e verificati su un'altra macchina. Chi aggiorna un warehouse creato prima di
+questa garanzia deve eseguire una volta `archive-raw-cache`; `verify-raw-cache` controlla
+poi presenza e checksum dell'intero archivio. I comandi
+`ingest-player-teams` e `ingest-player-profiles` completano la coorte storica Serie A
+con associazioni squadra-stagione e anagrafiche esatte per ID. Anche trasferimenti e
+indisponibilità possono essere estesi all'intera coorte, restando riprendibili dalla
+cache:
+
+```powershell
+uv run fantabuddy ingest-transfers --season-start 2026 --cohort serie-a-history
+uv run fantabuddy ingest-sidelined --season-start 2026 --cohort serie-a-history
+uv run fantabuddy ingest-player-teams
+uv run fantabuddy ingest-player-profiles
+uv run fantabuddy archive-raw-cache
+uv run fantabuddy verify-raw-cache
+```
 
 Il backfill fixture scopre prima il calendario della competizione e richiede i dettagli
 in gruppi di massimo 20 ID. Se il provider non restituisce eventi, formazioni e
@@ -252,6 +274,8 @@ uv run fantabuddy ingest-fixtures --seasons "2021" --daily-reserve 100 --pause-o
 ```text
 fantabuddy import-listoni <file-o-cartella>...
 fantabuddy validate [--season 2026/27]
+fantabuddy archive-raw-cache
+fantabuddy verify-raw-cache
 fantabuddy provider-check
 fantabuddy ingest-api --seasons 2022,2023
 fantabuddy ingest-squads --season-start 2026
@@ -260,6 +284,8 @@ fantabuddy ingest-fixtures --seasons 2021,2022 [--league-id 135]
 fantabuddy build-fixture-features
 fantabuddy ingest-transfers --season-start 2026
 fantabuddy ingest-sidelined --season-start 2026
+fantabuddy ingest-player-teams
+fantabuddy ingest-player-profiles
 fantabuddy backfill-careers --target-season-start 2026 --history-start 2021 --history-end 2025
 fantabuddy search-mapping-gaps --season 2026/27
 fantabuddy reconcile --season 2026/27 [--mapping-csv mapping.csv]

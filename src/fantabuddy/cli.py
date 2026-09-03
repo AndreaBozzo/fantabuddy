@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 from typing import Annotated
 
+import duckdb
 import typer
 
 from fantabuddy import __version__
@@ -22,14 +24,19 @@ from fantabuddy.provider import (
     ApiFootballClient,
     ApiFootballError,
     DailyQuotaGuard,
+    archive_recorded_raw_responses,
     backfill_player_histories,
     ingest_fixture_history,
     ingest_injuries,
+    ingest_player_profiles,
     ingest_player_season,
+    ingest_player_team_history,
+    ingest_player_transfers,
     ingest_sidelined_history,
     ingest_squads,
     ingest_team_transfers,
     search_player_profiles,
+    verify_recorded_raw_responses,
 )
 from fantabuddy.report import export_build
 
@@ -325,19 +332,115 @@ def ingest_squad_data(
 @app.command("ingest-transfers")
 def ingest_transfer_data(
     season_start: Annotated[int, typer.Option("--season-start", min=2000)],
+    cohort: Annotated[
+        str,
+        typer.Option(help="teams oppure serie-a-history"),
+    ] = "teams",
     db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
     cache_dir: Annotated[Path, typer.Option("--cache-dir")] = DEFAULT_CACHE,
     daily_reserve: Annotated[int, typer.Option("--daily-reserve", min=1)] = 100,
+    workers: Annotated[int, typer.Option("--workers", min=1, max=8)] = 4,
     refresh: Annotated[bool, typer.Option(help="Aggiorna ignorando la cache")] = False,
 ) -> None:
     """Acquisisce lo storico trasferimenti delle squadre presenti nel warehouse."""
+    if cohort not in {"teams", "serie-a-history"}:
+        raise typer.BadParameter("cohort deve essere teams oppure serie-a-history")
     with (
         database(db_path) as connection,
         ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
     ):
         client.status()
-        summary = ingest_team_transfers(
-            connection, client, season_start, refresh=refresh
+        summary: Mapping[str, object]
+        if cohort == "teams":
+            summary = ingest_team_transfers(
+                connection, client, season_start, refresh=refresh
+            )
+        else:
+            if refresh:
+                raise typer.BadParameter(
+                    "--refresh non è supportato per la coorte storica; "
+                    "la cache rende il backfill riprendibile"
+                )
+            rows = connection.execute(
+                """
+                SELECT DISTINCT api_player_id FROM api_player_season_stats
+                WHERE league_id = ?
+                UNION
+                SELECT DISTINCT api_player_id FROM api_squad_players
+                UNION
+                SELECT DISTINCT api_player_id FROM provider_player_mappings
+                WHERE status = 'accepted' AND api_player_id > 0
+                """,
+                [SERIE_A_LEAGUE_ID],
+            ).fetchall()
+            summary = ingest_player_transfers(
+                connection,
+                client,
+                [int(row[0]) for row in rows],
+                workers=workers,
+                daily_reserve=daily_reserve,
+            )
+        typer.echo(json.dumps({"cohort": cohort, **summary}, indent=2))
+
+
+def _serie_a_history_player_ids(connection: duckdb.DuckDBPyConnection) -> list[int]:
+    rows = connection.execute(
+        """
+        SELECT DISTINCT api_player_id FROM api_player_season_stats
+        WHERE league_id = ?
+        UNION
+        SELECT DISTINCT api_player_id FROM api_squad_players
+        UNION
+        SELECT DISTINCT api_player_id FROM provider_player_mappings
+        WHERE status = 'accepted' AND api_player_id > 0
+        """,
+        [SERIE_A_LEAGUE_ID],
+    ).fetchall()
+    return [int(row[0]) for row in rows]
+
+
+@app.command("ingest-player-teams")
+def ingest_player_teams(
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    cache_dir: Annotated[Path, typer.Option("--cache-dir")] = DEFAULT_CACHE,
+    daily_reserve: Annotated[int, typer.Option("--daily-reserve", min=1)] = 100,
+    workers: Annotated[int, typer.Option("--workers", min=1, max=8)] = 4,
+) -> None:
+    """Acquisisce squadre e stagioni di carriera per la coorte storica Serie A."""
+    with (
+        database(db_path) as connection,
+        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
+    ):
+        client.status()
+        summary = ingest_player_team_history(
+            connection,
+            client,
+            _serie_a_history_player_ids(connection),
+            workers=workers,
+            daily_reserve=daily_reserve,
+        )
+        typer.echo(json.dumps(summary, indent=2))
+
+
+@app.command("ingest-player-profiles")
+def ingest_exact_player_profiles(
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    cache_dir: Annotated[Path, typer.Option("--cache-dir")] = DEFAULT_CACHE,
+    daily_reserve: Annotated[int, typer.Option("--daily-reserve", min=1)] = 100,
+    workers: Annotated[int, typer.Option("--workers", min=1, max=8)] = 4,
+) -> None:
+    """Acquisisce profili anagrafici esatti per la coorte storica Serie A."""
+    with (
+        database(db_path) as connection,
+        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
+    ):
+        client.status()
+        summary = ingest_player_profiles(
+            connection,
+            client,
+            _serie_a_history_player_ids(connection),
+            workers=workers,
+            daily_reserve=daily_reserve,
         )
         typer.echo(json.dumps(summary, indent=2))
 
@@ -345,6 +448,10 @@ def ingest_transfer_data(
 @app.command("ingest-sidelined")
 def ingest_sidelined_data(
     season_start: Annotated[int, typer.Option("--season-start", min=2000)],
+    cohort: Annotated[
+        str,
+        typer.Option(help="current oppure serie-a-history"),
+    ] = "current",
     db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
     cache_dir: Annotated[Path, typer.Option("--cache-dir")] = DEFAULT_CACHE,
     daily_reserve: Annotated[int, typer.Option("--daily-reserve", min=1)] = 100,
@@ -352,20 +459,36 @@ def ingest_sidelined_data(
     refresh: Annotated[bool, typer.Option(help="Aggiorna ignorando la cache")] = False,
 ) -> None:
     """Acquisisce episodi storici di indisponibilità per la rosa della stagione."""
+    if cohort not in {"current", "serie-a-history"}:
+        raise typer.BadParameter("cohort deve essere current oppure serie-a-history")
     with (
         database(db_path) as connection,
         ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
     ):
         client.status()
-        rows = connection.execute(
-            """
-            SELECT DISTINCT api_player_id FROM api_squad_players WHERE season_start = ?
-            UNION
-            SELECT DISTINCT api_player_id FROM provider_player_mappings
-            WHERE season = ? AND status = 'accepted' AND api_player_id > 0
-            """,
-            [season_start, f"{season_start}/{str(season_start + 1)[-2:]}"],
-        ).fetchall()
+        if cohort == "current":
+            rows = connection.execute(
+                """
+                SELECT DISTINCT api_player_id FROM api_squad_players WHERE season_start = ?
+                UNION
+                SELECT DISTINCT api_player_id FROM provider_player_mappings
+                WHERE season = ? AND status = 'accepted' AND api_player_id > 0
+                """,
+                [season_start, f"{season_start}/{str(season_start + 1)[-2:]}"],
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT api_player_id FROM api_player_season_stats
+                WHERE league_id = ?
+                UNION
+                SELECT DISTINCT api_player_id FROM api_squad_players
+                UNION
+                SELECT DISTINCT api_player_id FROM provider_player_mappings
+                WHERE status = 'accepted' AND api_player_id > 0
+                """,
+                [SERIE_A_LEAGUE_ID],
+            ).fetchall()
         summary = ingest_sidelined_history(
             connection,
             client,
@@ -373,7 +496,7 @@ def ingest_sidelined_data(
             batch_size=batch_size,
             refresh=refresh,
         )
-        typer.echo(json.dumps(summary, indent=2))
+        typer.echo(json.dumps({"cohort": cohort, **summary}, indent=2))
 
 
 @app.command("backfill-careers")
@@ -466,6 +589,33 @@ def import_overrides(
     with database(db_path) as connection:
         count = import_overrides_csv(connection, path)
         typer.echo(f"override importati: {count}")
+
+
+@app.command("archive-raw-cache")
+def archive_raw_cache(
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    cache_dir: Annotated[Path, typer.Option("--cache-dir")] = DEFAULT_CACHE,
+) -> None:
+    """Rende immutabili i payload API legacy ancora verificabili tramite checksum."""
+    with database(db_path) as connection:
+        typer.echo(
+            json.dumps(
+                archive_recorded_raw_responses(connection, cache_dir=cache_dir), indent=2
+            )
+        )
+
+
+@app.command("verify-raw-cache")
+def verify_raw_cache(
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    cache_dir: Annotated[Path, typer.Option("--cache-dir")] = DEFAULT_CACHE,
+) -> None:
+    """Verifica integralmente presenza e checksum dell'archivio raw."""
+    with database(db_path) as connection:
+        result = verify_recorded_raw_responses(connection, cache_dir=cache_dir)
+        typer.echo(json.dumps(result, indent=2))
+        if result["missing_or_unreadable"] or result["checksum_mismatch"]:
+            raise typer.Exit(code=1)
 
 
 @app.command("validate")

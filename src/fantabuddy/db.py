@@ -54,8 +54,16 @@ CREATE TABLE IF NOT EXISTS api_raw_responses (
     payload_path VARCHAR NOT NULL,
     result_count INTEGER,
     page INTEGER,
-    total_pages INTEGER
+    total_pages INTEGER,
+    payload_available BOOLEAN NOT NULL DEFAULT FALSE,
+    archive_note VARCHAR,
+    payload_storage_key VARCHAR
 );
+
+ALTER TABLE api_raw_responses
+  ADD COLUMN IF NOT EXISTS payload_available BOOLEAN DEFAULT FALSE;
+ALTER TABLE api_raw_responses ADD COLUMN IF NOT EXISTS archive_note VARCHAR;
+ALTER TABLE api_raw_responses ADD COLUMN IF NOT EXISTS payload_storage_key VARCHAR;
 
 CREATE TABLE IF NOT EXISTS api_player_season_stats (
     api_player_id INTEGER NOT NULL,
@@ -117,6 +125,15 @@ CREATE TABLE IF NOT EXISTS api_player_profiles (
     height VARCHAR,
     weight VARCHAR,
     updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS api_player_team_history (
+    api_player_id INTEGER NOT NULL,
+    team_id INTEGER NOT NULL,
+    team_name VARCHAR NOT NULL,
+    season_start INTEGER NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (api_player_id, team_id, season_start)
 );
 
 CREATE TABLE IF NOT EXISTS api_player_transfers (

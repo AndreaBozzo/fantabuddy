@@ -3,12 +3,56 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import duckdb
 import pytest
 from conftest import write_listone
 from openpyxl import Workbook
 
 from fantabuddy.db import database, ingest_listone, listone_summary
 from fantabuddy.excel import read_listone
+
+
+def test_existing_raw_response_schema_is_migrated_safely(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy.duckdb"
+    legacy = duckdb.connect(str(db_path))
+    legacy.execute(
+        """
+        CREATE TABLE api_raw_responses (
+          response_id VARCHAR PRIMARY KEY,
+          endpoint VARCHAR NOT NULL,
+          parameters_json JSON NOT NULL,
+          requested_at TIMESTAMPTZ NOT NULL,
+          payload_sha256 VARCHAR NOT NULL,
+          payload_path VARCHAR NOT NULL,
+          result_count INTEGER,
+          page INTEGER,
+          total_pages INTEGER
+        )
+        """
+    )
+    legacy.execute(
+        """
+        INSERT INTO api_raw_responses VALUES (
+          'legacy', '/players', '{}', current_timestamp,
+          'unknown', 'old-cache.json.gz', 0, 1, 1
+        )
+        """
+    )
+    legacy.close()
+
+    with database(db_path) as connection:
+        columns = {
+            row[0] for row in connection.execute("DESCRIBE api_raw_responses").fetchall()
+        }
+        migrated = connection.execute(
+            """
+            SELECT payload_available, archive_note, payload_storage_key
+            FROM api_raw_responses WHERE response_id = 'legacy'
+            """
+        ).fetchone()
+
+    assert {"payload_available", "archive_note", "payload_storage_key"} <= columns
+    assert migrated == (False, None, None)
 
 
 def test_read_and_idempotently_ingest_listone(tmp_path: Path) -> None:
