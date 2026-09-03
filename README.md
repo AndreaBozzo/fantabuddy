@@ -244,6 +244,7 @@ uv run fantabuddy harvest-corpus --daily-reserve 100 --workers 4
 uv run fantabuddy archive-raw-cache
 uv run fantabuddy verify-raw-cache
 uv run fantabuddy corpus-status
+uv run fantabuddy export-corpus
 ```
 
 Il comando può terminare con exit code 75 quando raggiunge la riserva: non è perdita di
@@ -262,6 +263,18 @@ uv run fantabuddy verify-raw-cache --cache-dir data/raw/api-football
 Il controllo rilegge ogni payload compresso e ne confronta il checksum. Il database
 normalizzato resta interrogabile anche senza la cache, ma in quel caso non è possibile
 verificare o rielaborare la fonte grezza.
+
+`export-corpus` crea in `outputs/corpus/<timestamp>/` un file Parquet ordinato per ogni
+tabella persistente e un `manifest.json` con versione del formato, revisione del codice,
+schema, conteggi, dimensioni e checksum SHA-256. I percorsi assoluti locali vengono
+esclusi. Lo snapshot può essere controllato senza warehouse e senza chiave API:
+
+```powershell
+uv run fantabuddy verify-corpus-export outputs/corpus/<snapshot-id>
+```
+
+I Parquet contengono il corpus normalizzato; i payload sorgente restano separati nella
+cache raw e si collegano tramite `api_raw_responses.payload_storage_key`.
 
 Il backfill fixture scopre prima il calendario della competizione e richiede i dettagli
 in gruppi di massimo 20 ID. Se il provider non restituisce eventi, formazioni e
@@ -332,6 +345,8 @@ fantabuddy ingest-player-seasons
 fantabuddy ingest-player-trophies
 fantabuddy harvest-corpus
 fantabuddy corpus-status
+fantabuddy export-corpus [--snapshot-id nome]
+fantabuddy verify-corpus-export <directory-snapshot>
 fantabuddy backfill-careers --target-season-start 2026 --history-start 2021 --history-end 2025
 fantabuddy search-mapping-gaps --season 2026/27
 fantabuddy reconcile --season 2026/27 [--mapping-csv mapping.csv]
