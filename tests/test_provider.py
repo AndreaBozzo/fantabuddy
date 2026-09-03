@@ -14,11 +14,15 @@ from fantabuddy.provider import (
     archive_recorded_raw_responses,
     ingest_fixture_history,
     ingest_injuries,
+    ingest_league_profiles,
+    ingest_player_available_seasons,
     ingest_player_profiles,
     ingest_player_team_history,
     ingest_player_transfers,
+    ingest_player_trophies,
     ingest_sidelined_history,
     ingest_squads,
+    ingest_team_profiles,
     ingest_team_transfers,
     record_raw_response,
     verify_recorded_raw_responses,
@@ -732,3 +736,215 @@ def test_exact_profiles_and_team_history_tolerate_missing_seasons(
     assert teams["failures"] == 0
     assert profile_row == (99, date(2000, 1, 1))
     assert team_rows == [(99, 10, 2025)]
+
+
+def test_team_profiles_preserve_club_and_venue_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("fantabuddy.provider.time.sleep", lambda _: None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/status":
+            return httpx.Response(200, json=_status())
+        assert request.url.path == "/teams"
+        assert request.url.params["id"] == "10"
+        return httpx.Response(
+            200,
+            json=_api_body(
+                [
+                    {
+                        "team": {
+                            "id": 10,
+                            "name": "Inter",
+                            "code": "INT",
+                            "country": "Italy",
+                            "founded": 1908,
+                            "national": False,
+                            "logo": "https://example.test/inter.png",
+                        },
+                        "venue": {
+                            "id": 99,
+                            "name": "Test Stadium",
+                            "address": "Via Test",
+                            "city": "Milano",
+                            "capacity": 75000,
+                            "surface": "grass",
+                        },
+                    }
+                ]
+            ),
+        )
+
+    with (
+        database(tmp_path / "db.duckdb") as connection,
+        ApiFootballClient(
+            tmp_path / "cache", api_key="test-key", transport=httpx.MockTransport(handler)
+        ) as client,
+    ):
+        client.status()
+        summary = ingest_team_profiles(
+            connection, client, [10], workers=1, daily_reserve=10
+        )
+        row = connection.execute(
+            """
+            SELECT team_name, code, country, founded, venue_name, venue_capacity
+            FROM api_teams WHERE team_id = 10
+            """
+        ).fetchone()
+
+    assert summary["network_calls"] == 1
+    assert summary["failures"] == 0
+    assert row == ("Inter", "INT", "Italy", 1908, "Test Stadium", 75000)
+
+
+def test_stale_status_quota_is_reported_as_deferred_not_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("fantabuddy.provider.time.sleep", lambda _: None)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        if request.url.path == "/status":
+            return httpx.Response(200, json=_status(limit=100))
+        calls += 1
+        return httpx.Response(
+            200,
+            json=_api_body([]),
+            headers={"x-ratelimit-requests-remaining": "1"},
+        )
+
+    with (
+        database(tmp_path / "db.duckdb") as connection,
+        ApiFootballClient(
+            tmp_path / "cache",
+            api_key="test-key",
+            daily_reserve=1,
+            transport=httpx.MockTransport(handler),
+        ) as client,
+    ):
+        client.status()
+        summary = ingest_team_profiles(
+            connection, client, [10, 20, 30], workers=4, daily_reserve=1
+        )
+
+    assert calls == 1
+    assert summary["processed"] == 1
+    assert summary["deferred"] == 2
+    assert summary["failures"] == 0
+
+
+def test_stable_corpus_metadata_is_normalized_and_replayable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("fantabuddy.provider.time.sleep", lambda _: None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/status":
+            return httpx.Response(200, json=_status(limit=100))
+        if request.url.path == "/leagues":
+            response: object = [
+                {
+                    "league": {
+                        "id": 135,
+                        "name": "Serie A",
+                        "type": "League",
+                        "logo": "https://example.test/serie-a.png",
+                    },
+                    "country": {
+                        "name": "Italy",
+                        "code": "IT",
+                        "flag": "https://example.test/it.png",
+                    },
+                    "seasons": [
+                        {
+                            "year": 2025,
+                            "start": "2025-08-23",
+                            "end": "2026-05-24",
+                            "current": False,
+                            "coverage": {"fixtures": {"events": True}},
+                        },
+                        {"year": "", "coverage": {}},
+                    ],
+                }
+            ]
+        elif request.url.path == "/players/seasons":
+            response = [2021, 2022, "", None]
+        else:
+            assert request.url.path == "/trophies"
+            response = [
+                {
+                    "league": "Coppa Italia",
+                    "country": "Italy",
+                    "season": "2023/2024",
+                    "place": "Winner",
+                },
+                {"league": "", "season": "2022/2023", "place": "Winner"},
+            ]
+        return httpx.Response(
+            200,
+            json=_api_body(response),
+            headers={"x-ratelimit-requests-remaining": "90"},
+        )
+
+    with (
+        database(tmp_path / "db.duckdb") as connection,
+        ApiFootballClient(
+            tmp_path / "cache", api_key="test-key", transport=httpx.MockTransport(handler)
+        ) as client,
+    ):
+        client.status()
+        leagues = ingest_league_profiles(
+            connection, client, [135], workers=1, daily_reserve=1
+        )
+        seasons = ingest_player_available_seasons(
+            connection, client, [99], workers=1, daily_reserve=1
+        )
+        trophies = ingest_player_trophies(
+            connection, client, [99], workers=1, daily_reserve=1
+        )
+        replay = ingest_player_trophies(
+            connection, client, [99], workers=1, daily_reserve=1
+        )
+        league_row = connection.execute(
+            "SELECT league_name, country_code FROM api_leagues WHERE league_id = 135"
+        ).fetchone()
+        league_season = connection.execute(
+            """
+            SELECT season_start, coverage_json->'fixtures'->>'events'
+            FROM api_league_seasons WHERE league_id = 135
+            """
+        ).fetchone()
+        player_seasons = connection.execute(
+            """
+            SELECT season_start FROM api_player_available_seasons
+            WHERE api_player_id = 99 ORDER BY season_start
+            """
+        ).fetchall()
+        trophy_rows = connection.execute(
+            """
+            SELECT league_name, country_name, season, place
+            FROM api_player_trophies WHERE api_player_id = 99
+            """
+        ).fetchall()
+        provenance = connection.execute(
+            """
+            SELECT t.observed_at, r.requested_at
+            FROM api_player_trophies t
+            JOIN api_raw_responses r
+              ON r.endpoint = '/trophies'
+             AND (r.parameters_json->>'player') = CAST(t.api_player_id AS VARCHAR)
+            """
+        ).fetchone()
+
+    assert leagues["network_calls"] == 1
+    assert leagues["profile_rows"] == 1
+    assert leagues["season_rows"] == 1
+    assert seasons["normalized_rows"] == 2
+    assert trophies["normalized_rows"] == 1
+    assert replay["network_calls"] == 0
+    assert league_row == ("Serie A", "IT")
+    assert league_season == (2025, "true")
+    assert player_seasons == [(2021,), (2022,)]
+    assert trophy_rows == [("Coppa Italia", "Italy", "2023/2024", "Winner")]
+    assert provenance is not None and provenance[0] == provenance[1]

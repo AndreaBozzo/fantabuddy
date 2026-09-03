@@ -8,8 +8,26 @@ import pytest
 from conftest import write_listone
 from openpyxl import Workbook
 
-from fantabuddy.db import database, ingest_listone, listone_summary
+from fantabuddy.db import corpus_inventory, database, ingest_listone, listone_summary
 from fantabuddy.excel import read_listone
+
+
+def test_empty_corpus_inventory_is_available_without_api_key(tmp_path: Path) -> None:
+    with database(tmp_path / "empty.duckdb") as connection:
+        inventory = corpus_inventory(connection)
+
+    assert inventory["coverage"] == {
+        "historical_players": 0,
+        "player_profiles": 0,
+        "player_team_histories": 0,
+        "player_seasons_queried": 0,
+        "player_trophies_queried": 0,
+        "referenced_teams": 0,
+        "team_profiles": 0,
+        "referenced_leagues": 0,
+        "league_profiles": 0,
+    }
+    assert inventory["raw_archive"]["declared_available"] == 0
 
 
 def test_existing_raw_response_schema_is_migrated_safely(tmp_path: Path) -> None:

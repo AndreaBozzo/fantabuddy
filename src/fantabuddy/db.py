@@ -136,6 +136,62 @@ CREATE TABLE IF NOT EXISTS api_player_team_history (
     PRIMARY KEY (api_player_id, team_id, season_start)
 );
 
+CREATE TABLE IF NOT EXISTS api_teams (
+    team_id INTEGER PRIMARY KEY,
+    team_name VARCHAR NOT NULL,
+    code VARCHAR,
+    country VARCHAR,
+    founded INTEGER,
+    national BOOLEAN,
+    logo_url VARCHAR,
+    venue_id INTEGER,
+    venue_name VARCHAR,
+    venue_address VARCHAR,
+    venue_city VARCHAR,
+    venue_capacity INTEGER,
+    venue_surface VARCHAR,
+    observed_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS api_leagues (
+    league_id INTEGER PRIMARY KEY,
+    league_name VARCHAR NOT NULL,
+    league_type VARCHAR,
+    country_name VARCHAR,
+    country_code VARCHAR,
+    logo_url VARCHAR,
+    flag_url VARCHAR,
+    observed_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS api_league_seasons (
+    league_id INTEGER NOT NULL,
+    season_start INTEGER NOT NULL,
+    start_date DATE,
+    end_date DATE,
+    is_current BOOLEAN,
+    coverage_json JSON NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (league_id, season_start)
+);
+
+CREATE TABLE IF NOT EXISTS api_player_available_seasons (
+    api_player_id INTEGER NOT NULL,
+    season_start INTEGER NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (api_player_id, season_start)
+);
+
+CREATE TABLE IF NOT EXISTS api_player_trophies (
+    trophy_id VARCHAR PRIMARY KEY,
+    api_player_id INTEGER NOT NULL,
+    league_name VARCHAR NOT NULL,
+    country_name VARCHAR,
+    season VARCHAR NOT NULL,
+    place VARCHAR NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS api_player_transfers (
     api_player_id INTEGER NOT NULL,
     player_name VARCHAR NOT NULL,
@@ -577,3 +633,107 @@ def listone_summary(connection: duckdb.DuckDBPyConnection) -> list[dict[str, obj
         """
     ).fetchall()
     return [dict(zip(columns, row, strict=True)) for row in rows]
+
+
+def corpus_inventory(connection: duckdb.DuckDBPyConnection) -> dict[str, object]:
+    """Restituisce un inventario portabile del corpus senza richiedere la chiave API."""
+    coverage_columns = [
+        "historical_players",
+        "player_profiles",
+        "player_team_histories",
+        "player_seasons_queried",
+        "player_trophies_queried",
+        "referenced_teams",
+        "team_profiles",
+        "referenced_leagues",
+        "league_profiles",
+    ]
+    coverage_row = connection.execute(
+        """
+        WITH historical_players AS (
+          SELECT api_player_id FROM api_player_season_stats WHERE league_id = 135
+          UNION SELECT api_player_id FROM api_squad_players
+          UNION SELECT api_player_id FROM provider_player_mappings
+                WHERE status = 'accepted' AND api_player_id > 0
+        ),
+        team_refs AS (
+          SELECT team_id FROM api_player_team_history
+          UNION SELECT team_id FROM api_player_season_stats
+          UNION SELECT team_id FROM api_squad_players
+          UNION SELECT home_team_id FROM api_fixtures
+          UNION SELECT away_team_id FROM api_fixtures
+          UNION SELECT team_in_id FROM api_player_transfers
+          UNION SELECT team_out_id FROM api_player_transfers
+        ),
+        league_refs AS (
+          SELECT league_id FROM api_player_season_stats
+          UNION SELECT league_id FROM api_fixtures
+        )
+        SELECT
+          (SELECT count(*) FROM historical_players),
+          (SELECT count(*) FROM historical_players p
+             WHERE EXISTS (SELECT 1 FROM api_player_profiles x
+                           WHERE x.api_player_id = p.api_player_id)),
+          (SELECT count(*) FROM historical_players p
+             WHERE EXISTS (SELECT 1 FROM api_player_team_history x
+                           WHERE x.api_player_id = p.api_player_id)),
+          (SELECT count(DISTINCT parameters_json) FROM api_raw_responses
+             WHERE endpoint = '/players/seasons'),
+          (SELECT count(DISTINCT parameters_json) FROM api_raw_responses
+             WHERE endpoint = '/trophies'),
+          (SELECT count(*) FROM team_refs),
+          (SELECT count(*) FROM team_refs t
+             WHERE EXISTS (SELECT 1 FROM api_teams x WHERE x.team_id = t.team_id)),
+          (SELECT count(*) FROM league_refs),
+          (SELECT count(*) FROM league_refs l
+             WHERE EXISTS (SELECT 1 FROM api_leagues x WHERE x.league_id = l.league_id))
+        """
+    ).fetchone()
+    if coverage_row is None:
+        raise RuntimeError("impossibile calcolare la copertura del corpus")
+    coverage = dict(zip(coverage_columns, coverage_row, strict=True))
+
+    table_names = [
+        "api_raw_responses",
+        "api_player_profiles",
+        "api_player_team_history",
+        "api_player_available_seasons",
+        "api_player_trophies",
+        "api_player_transfers",
+        "api_player_sidelined",
+        "api_injuries",
+        "api_player_season_stats",
+        "api_fixtures",
+        "api_player_fixture_stats",
+        "api_teams",
+        "api_leagues",
+        "api_league_seasons",
+    ]
+    row_counts = {
+        table_name: int(
+            connection.execute(f"SELECT count(*) FROM {table_name}").fetchone()[0]  # type: ignore[index]
+        )
+        for table_name in table_names
+    }
+    raw_row = connection.execute(
+        """
+        SELECT
+          count(*) FILTER (WHERE payload_available),
+          count(*) FILTER (WHERE NOT payload_available),
+          min(requested_at),
+          max(requested_at)
+        FROM api_raw_responses
+        """
+    ).fetchone()
+    if raw_row is None:
+        raise RuntimeError("impossibile calcolare lo stato dei payload grezzi")
+    return {
+        "coverage": coverage,
+        "rows": row_counts,
+        "raw_archive": {
+            "declared_available": int(raw_row[0]),
+            "declared_unavailable": int(raw_row[1]),
+            "first_requested_at": raw_row[2],
+            "last_requested_at": raw_row[3],
+        },
+    }

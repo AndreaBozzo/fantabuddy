@@ -46,6 +46,21 @@ server, niente internet, niente notebook aperto a metà.
 Servono Python 3.12, [uv](https://docs.astral.sh/uv/) e il listone ufficiale già
 scaricato (`Quotazioni_Fantacalcio_Stagione_*.xlsx`).
 
+Da un clone o da un archivio appena scaricato, l'installazione riproducibile usa il
+lockfile versionato:
+
+```powershell
+git clone https://github.com/AndreaBozzo/fantabuddy.git
+Set-Location fantabuddy
+uv sync --locked
+uv run fantabuddy --help
+```
+
+Per contribuire e lanciare anche test, lint e type checking usare invece
+`uv sync --all-groups --locked`. Warehouse, cache API, listoni e output sono esclusi da
+Git: un nuovo utente parte intenzionalmente da un database vuoto e lo alimenta con i
+propri dati.
+
 📥 **[Scarica il listone](https://www.fantacalcio.it/api/v1/Excel/prices/21/1)** — è il
 link diretto dietro al bottone *Scarica* di
 [fantacalcio.it/quotazioni-fantacalcio](https://www.fantacalcio.it/quotazioni-fantacalcio).
@@ -191,6 +206,10 @@ uv run fantabuddy ingest-transfers --season-start 2026
 uv run fantabuddy ingest-sidelined --season-start 2026
 uv run fantabuddy ingest-player-teams
 uv run fantabuddy ingest-player-profiles
+uv run fantabuddy ingest-team-profiles
+uv run fantabuddy ingest-league-profiles
+uv run fantabuddy ingest-player-seasons
+uv run fantabuddy ingest-player-trophies
 uv run fantabuddy reconcile-all
 uv run fantabuddy reconcile --season "2026/27"
 uv run fantabuddy backfill-careers --target-season-start 2026 --history-start 2021 --history-end 2025 --cohort current
@@ -212,16 +231,37 @@ poi presenza e checksum dell'intero archivio. I comandi
 `ingest-player-teams` e `ingest-player-profiles` completano la coorte storica Serie A
 con associazioni squadra-stagione e anagrafiche esatte per ID. Anche trasferimenti e
 indisponibilità possono essere estesi all'intera coorte, restando riprendibili dalla
-cache:
+cache. `harvest-corpus` orchestra poi gli arricchimenti stabili ancora mancanti —
+competizioni e relative coverage, club e stadi, stagioni disponibili e palmarès — in
+quest'ordine, usando prima la cache e lasciando la riserva giornaliera richiesta:
 
 ```powershell
 uv run fantabuddy ingest-transfers --season-start 2026 --cohort serie-a-history
 uv run fantabuddy ingest-sidelined --season-start 2026 --cohort serie-a-history
 uv run fantabuddy ingest-player-teams
 uv run fantabuddy ingest-player-profiles
+uv run fantabuddy harvest-corpus --daily-reserve 100 --workers 4
 uv run fantabuddy archive-raw-cache
 uv run fantabuddy verify-raw-cache
+uv run fantabuddy corpus-status
 ```
+
+Il comando può terminare con exit code 75 quando raggiunge la riserva: non è perdita di
+dati, e un nuovo lancio dopo il reset UTC riprende dagli ID non ancora in cache. Un exit
+code 1 indica invece errori da esaminare. `corpus-status` non usa la rete né richiede una
+chiave e rende visibili conteggi e copertura anche a chi riceve una copia del corpus.
+
+Per spostare o conservare il corpus copiare insieme
+`data/warehouse/fantabuddy.duckdb` e `data/raw/api-football/`, mantenendo quella struttura
+relativa. Dopo il trasferimento eseguire:
+
+```powershell
+uv run fantabuddy verify-raw-cache --cache-dir data/raw/api-football
+```
+
+Il controllo rilegge ogni payload compresso e ne confronta il checksum. Il database
+normalizzato resta interrogabile anche senza la cache, ma in quel caso non è possibile
+verificare o rielaborare la fonte grezza.
 
 Il backfill fixture scopre prima il calendario della competizione e richiede i dettagli
 in gruppi di massimo 20 ID. Se il provider non restituisce eventi, formazioni e
@@ -286,6 +326,12 @@ fantabuddy ingest-transfers --season-start 2026
 fantabuddy ingest-sidelined --season-start 2026
 fantabuddy ingest-player-teams
 fantabuddy ingest-player-profiles
+fantabuddy ingest-team-profiles
+fantabuddy ingest-league-profiles
+fantabuddy ingest-player-seasons
+fantabuddy ingest-player-trophies
+fantabuddy harvest-corpus
+fantabuddy corpus-status
 fantabuddy backfill-careers --target-season-start 2026 --history-start 2021 --history-end 2025
 fantabuddy search-mapping-gaps --season 2026/27
 fantabuddy reconcile --season 2026/27 [--mapping-csv mapping.csv]

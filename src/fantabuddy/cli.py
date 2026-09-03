@@ -15,7 +15,7 @@ from fantabuddy import __version__
 from fantabuddy.analytics import allocate_prices, metrics_as_dicts, persist_build, train_and_project
 from fantabuddy.config import load_league_config
 from fantabuddy.curation import import_overrides_csv
-from fantabuddy.db import database, ingest_listone, listone_summary
+from fantabuddy.db import corpus_inventory, database, ingest_listone, listone_summary
 from fantabuddy.excel import read_listone
 from fantabuddy.features import materialize_player_fixture_features
 from fantabuddy.mapping import export_pending_mappings, import_mapping_csv, reconcile_season
@@ -28,12 +28,16 @@ from fantabuddy.provider import (
     backfill_player_histories,
     ingest_fixture_history,
     ingest_injuries,
+    ingest_league_profiles,
+    ingest_player_available_seasons,
     ingest_player_profiles,
     ingest_player_season,
     ingest_player_team_history,
     ingest_player_transfers,
+    ingest_player_trophies,
     ingest_sidelined_history,
     ingest_squads,
+    ingest_team_profiles,
     ingest_team_transfers,
     search_player_profiles,
     verify_recorded_raw_responses,
@@ -399,6 +403,31 @@ def _serie_a_history_player_ids(connection: duckdb.DuckDBPyConnection) -> list[i
     return [int(row[0]) for row in rows]
 
 
+def _corpus_team_ids(connection: duckdb.DuckDBPyConnection) -> list[int]:
+    rows = connection.execute(
+        """
+        SELECT team_id FROM api_player_team_history
+        UNION SELECT team_id FROM api_player_season_stats
+        UNION SELECT team_id FROM api_squad_players
+        UNION SELECT home_team_id FROM api_fixtures
+        UNION SELECT away_team_id FROM api_fixtures
+        UNION SELECT team_in_id FROM api_player_transfers
+        UNION SELECT team_out_id FROM api_player_transfers
+        """
+    ).fetchall()
+    return [int(row[0]) for row in rows]
+
+
+def _corpus_league_ids(connection: duckdb.DuckDBPyConnection) -> list[int]:
+    rows = connection.execute(
+        """
+        SELECT league_id FROM api_player_season_stats
+        UNION SELECT league_id FROM api_fixtures
+        """
+    ).fetchall()
+    return [int(row[0]) for row in rows]
+
+
 @app.command("ingest-player-teams")
 def ingest_player_teams(
     db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
@@ -443,6 +472,165 @@ def ingest_exact_player_profiles(
             daily_reserve=daily_reserve,
         )
         typer.echo(json.dumps(summary, indent=2))
+
+
+@app.command("ingest-team-profiles")
+def ingest_exact_team_profiles(
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    cache_dir: Annotated[Path, typer.Option("--cache-dir")] = DEFAULT_CACHE,
+    daily_reserve: Annotated[int, typer.Option("--daily-reserve", min=1)] = 100,
+    workers: Annotated[int, typer.Option("--workers", min=1, max=8)] = 4,
+) -> None:
+    """Acquisisce metadati esatti per tutti i club referenziati nel corpus."""
+    with (
+        database(db_path) as connection,
+        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
+    ):
+        client.status()
+        summary = ingest_team_profiles(
+            connection,
+            client,
+            _corpus_team_ids(connection),
+            workers=workers,
+            daily_reserve=daily_reserve,
+        )
+        typer.echo(json.dumps(summary, indent=2))
+
+
+@app.command("ingest-league-profiles")
+def ingest_exact_league_profiles(
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    cache_dir: Annotated[Path, typer.Option("--cache-dir")] = DEFAULT_CACHE,
+    daily_reserve: Annotated[int, typer.Option("--daily-reserve", min=1)] = 100,
+    workers: Annotated[int, typer.Option("--workers", min=1, max=8)] = 4,
+) -> None:
+    """Acquisisce metadati, stagioni e coverage delle competizioni nel corpus."""
+    with (
+        database(db_path) as connection,
+        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
+    ):
+        client.status()
+        summary = ingest_league_profiles(
+            connection,
+            client,
+            _corpus_league_ids(connection),
+            workers=workers,
+            daily_reserve=daily_reserve,
+        )
+        typer.echo(json.dumps(summary, indent=2))
+
+
+@app.command("ingest-player-seasons")
+def ingest_available_player_seasons(
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    cache_dir: Annotated[Path, typer.Option("--cache-dir")] = DEFAULT_CACHE,
+    daily_reserve: Annotated[int, typer.Option("--daily-reserve", min=1)] = 100,
+    workers: Annotated[int, typer.Option("--workers", min=1, max=8)] = 4,
+) -> None:
+    """Indicizza le stagioni interrogabili per la coorte storica Serie A."""
+    with (
+        database(db_path) as connection,
+        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
+    ):
+        client.status()
+        summary = ingest_player_available_seasons(
+            connection,
+            client,
+            _serie_a_history_player_ids(connection),
+            workers=workers,
+            daily_reserve=daily_reserve,
+        )
+        typer.echo(json.dumps(summary, indent=2))
+
+
+@app.command("ingest-player-trophies")
+def ingest_historical_player_trophies(
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    cache_dir: Annotated[Path, typer.Option("--cache-dir")] = DEFAULT_CACHE,
+    daily_reserve: Annotated[int, typer.Option("--daily-reserve", min=1)] = 100,
+    workers: Annotated[int, typer.Option("--workers", min=1, max=8)] = 4,
+) -> None:
+    """Acquisisce il palmarès della coorte storica Serie A."""
+    with (
+        database(db_path) as connection,
+        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
+    ):
+        client.status()
+        summary = ingest_player_trophies(
+            connection,
+            client,
+            _serie_a_history_player_ids(connection),
+            workers=workers,
+            daily_reserve=daily_reserve,
+        )
+        typer.echo(json.dumps(summary, indent=2))
+
+
+@app.command("harvest-corpus")
+def harvest_corpus(
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    cache_dir: Annotated[Path, typer.Option("--cache-dir")] = DEFAULT_CACHE,
+    daily_reserve: Annotated[int, typer.Option("--daily-reserve", min=1)] = 100,
+    workers: Annotated[int, typer.Option("--workers", min=1, max=8)] = 4,
+) -> None:
+    """Consuma in modo riprendibile la quota per arricchimenti stabili del corpus."""
+    with (
+        database(db_path) as connection,
+        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
+    ):
+        status = client.status()
+        players = _serie_a_history_player_ids(connection)
+        results = {
+            "leagues": ingest_league_profiles(
+                connection,
+                client,
+                _corpus_league_ids(connection),
+                workers=workers,
+                daily_reserve=daily_reserve,
+            ),
+            "teams": ingest_team_profiles(
+                connection,
+                client,
+                _corpus_team_ids(connection),
+                workers=workers,
+                daily_reserve=daily_reserve,
+            ),
+            "player_seasons": ingest_player_available_seasons(
+                connection,
+                client,
+                players,
+                workers=workers,
+                daily_reserve=daily_reserve,
+            ),
+            "player_trophies": ingest_player_trophies(
+                connection,
+                client,
+                players,
+                workers=workers,
+                daily_reserve=daily_reserve,
+            ),
+        }
+        output = {
+            "plan": status.get("subscription", {}).get("plan"),
+            "remaining": client.remaining,
+            "daily_reserve": daily_reserve,
+            "results": results,
+            "inventory": corpus_inventory(connection),
+        }
+        typer.echo(json.dumps(output, default=str, indent=2))
+        if any(bool(result["failures"]) for result in results.values()):
+            raise typer.Exit(1)
+        if any(bool(result["deferred"]) for result in results.values()):
+            raise typer.Exit(75)
+
+
+@app.command("corpus-status")
+def show_corpus_status(
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+) -> None:
+    """Mostra dimensione e copertura del corpus; non richiede una chiave API."""
+    with database(db_path) as connection:
+        typer.echo(json.dumps(corpus_inventory(connection), default=str, indent=2))
 
 
 @app.command("ingest-sidelined")

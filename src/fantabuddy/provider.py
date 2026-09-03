@@ -64,6 +64,7 @@ class ApiFootballClient:
         self.requests_limit: int | None = None
         self.plan: str | None = None
         self._rate_lock = threading.Lock()
+        self._request_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._next_request_at = 0.0
         self.http = httpx.Client(
@@ -99,14 +100,19 @@ class ApiFootballClient:
             return None
         return self.requests_limit - self.requests_current
 
-    def _ensure_budget(self) -> None:
+    def _reserve_budget(self) -> None:
         if self.remaining is None:
             self.status()
-        if self.remaining is not None and self.remaining <= self.daily_reserve:
-            raise DailyQuotaGuard(
-                f"quota protetta: restano {self.remaining} richieste; "
-                f"riserva configurata {self.daily_reserve}"
-            )
+        with self._state_lock:
+            if self.remaining is not None and self.remaining <= self.daily_reserve:
+                raise DailyQuotaGuard(
+                    f"quota protetta: restano {self.remaining} richieste; "
+                    f"riserva configurata {self.daily_reserve}"
+                )
+            if self.requests_current is not None:
+                # Prenota la richiesta prima di rilasciare il lock: più worker non
+                # possono oltrepassare contemporaneamente la riserva giornaliera.
+                self.requests_current += 1
 
     def _wait_for_rate_slot(self) -> None:
         # Limiti documentati: Free 10/min, Pro 5/s. Il lock rende sicuro
@@ -138,18 +144,18 @@ class ApiFootballClient:
             with gzip.open(cache_path, "rt", encoding="utf-8") as stream:
                 return json.load(stream), cache_path, True
 
-        if endpoint != "/status":
-            self._ensure_budget()
-            self._wait_for_rate_slot()
-        response = self.http.get(endpoint, params=cast(Any, params))
-        response.raise_for_status()
-        body = response.json()
-        with self._state_lock:
-            if endpoint != "/status" and self.requests_current is not None:
-                self.requests_current += 1
-            remaining_header = response.headers.get("x-ratelimit-requests-remaining")
-            if remaining_header and self.requests_limit is not None:
-                self.requests_current = self.requests_limit - int(remaining_header)
+        with self._request_lock:
+            if endpoint != "/status":
+                self._reserve_budget()
+                self._wait_for_rate_slot()
+            response = self.http.get(endpoint, params=cast(Any, params))
+            response.raise_for_status()
+            body = response.json()
+            with self._state_lock:
+                remaining_header = response.headers.get("x-ratelimit-requests-remaining")
+                if remaining_header and self.requests_limit is not None:
+                    header_current = self.requests_limit - int(remaining_header)
+                    self.requests_current = max(self.requests_current or 0, header_current)
         self._validate_body(body, endpoint)
 
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,7 +179,7 @@ def record_raw_response(
     params: dict[str, object],
     body: dict[str, Any],
     cache_path: Path,
-) -> None:
+) -> datetime:
     payload = _stable_json(body)
     payload_sha = hashlib.sha256(payload.encode()).hexdigest()
     response_id = _cache_key(endpoint, {**params, "payload_sha": payload_sha})
@@ -190,6 +196,7 @@ def record_raw_response(
         archive_path.unlink(missing_ok=True)
         raise
     paging = body.get("paging") or {}
+    requested_at = datetime.now(tz=UTC)
     connection.execute(
         """
         INSERT OR IGNORE INTO api_raw_responses (
@@ -202,7 +209,7 @@ def record_raw_response(
             response_id,
             endpoint,
             _stable_json(params),
-            datetime.now(tz=UTC),
+            requested_at,
             payload_sha,
             str(archive_path),
             int(body.get("results") or 0),
@@ -220,6 +227,12 @@ def record_raw_response(
         """,
         [str(archive_path), storage_key, response_id],
     )
+    stored = connection.execute(
+        "SELECT requested_at FROM api_raw_responses WHERE response_id = ?", [response_id]
+    ).fetchone()
+    if stored is None:
+        raise RuntimeError("impossibile recuperare la provenance del payload raw")
+    return cast(datetime, stored[0])
 
 
 def archive_recorded_raw_responses(
@@ -359,18 +372,19 @@ def verify_recorded_raw_responses(
     }
 
 
-def _select_cached_and_budgeted_player_ids(
+def _select_cached_and_budgeted_ids(
     client: ApiFootballClient,
     endpoint: str,
-    player_ids: list[int],
+    parameter: str,
+    entity_ids: list[int],
     daily_reserve: int,
 ) -> tuple[list[int], int]:
     """Include tutta la cache e limita soltanto le richieste che consumano quota."""
-    unique_ids = sorted({player_id for player_id in player_ids if player_id > 0})
+    unique_ids = sorted({entity_id for entity_id in entity_ids if entity_id > 0})
     cached_ids = [
-        player_id
-        for player_id in unique_ids
-        if client.is_cached(endpoint, {"player": player_id})
+        entity_id
+        for entity_id in unique_ids
+        if client.is_cached(endpoint, {parameter: entity_id})
     ]
     cached_set = set(cached_ids)
     uncached_ids = [player_id for player_id in unique_ids if player_id not in cached_set]
@@ -740,12 +754,13 @@ def ingest_player_profiles(
 ) -> dict[str, object]:
     """Acquisisce profili anagrafici esatti per ID, senza ricerche ambigue per nome."""
     unique_ids = sorted({player_id for player_id in player_ids if player_id > 0})
-    selected, deferred = _select_cached_and_budgeted_player_ids(
-        client, "/players/profiles", unique_ids, daily_reserve
+    selected, deferred = _select_cached_and_budgeted_ids(
+        client, "/players/profiles", "player", unique_ids, daily_reserve
     )
     network_calls = 0
     profiles = 0
     failures = 0
+    quota_deferred = 0
     failure_details: list[str] = []
 
     def fetch(player_id: int) -> tuple[int, dict[str, Any], Path, bool]:
@@ -761,7 +776,7 @@ def ingest_player_profiles(
             try:
                 _, body, cache_path, cached = future.result()
                 network_calls += int(not cached)
-                record_raw_response(
+                observed_at = record_raw_response(
                     connection,
                     endpoint="/players/profiles",
                     params={"player": player_id},
@@ -782,7 +797,7 @@ def ingest_player_profiles(
                             player.get("nationality"),
                             player.get("height"),
                             player.get("weight"),
-                            datetime.now(tz=UTC),
+                            observed_at,
                         )
                     )
                 _bulk_insert(
@@ -803,14 +818,16 @@ def ingest_player_profiles(
                     replace=True,
                 )
                 profiles += len(rows)
+            except DailyQuotaGuard:
+                quota_deferred += 1
             except Exception as exc:
                 failures += 1
                 if len(failure_details) < 10:
                     failure_details.append(f"{player_id}: {exc}")
     return {
         "players": len(unique_ids),
-        "processed": len(selected),
-        "deferred": deferred,
+        "processed": len(selected) - failures - quota_deferred,
+        "deferred": deferred + quota_deferred,
         "failures": failures,
         "failure_sample": failure_details,
         "profiles": profiles,
@@ -828,12 +845,13 @@ def ingest_player_team_history(
 ) -> dict[str, object]:
     """Acquisisce le squadre e stagioni di carriera dichiarate dal provider."""
     unique_ids = sorted({player_id for player_id in player_ids if player_id > 0})
-    selected, deferred = _select_cached_and_budgeted_player_ids(
-        client, "/players/teams", unique_ids, daily_reserve
+    selected, deferred = _select_cached_and_budgeted_ids(
+        client, "/players/teams", "player", unique_ids, daily_reserve
     )
     network_calls = 0
     normalized_rows = 0
     failures = 0
+    quota_deferred = 0
     failure_details: list[str] = []
 
     def fetch(player_id: int) -> tuple[int, dict[str, Any], Path, bool]:
@@ -849,14 +867,13 @@ def ingest_player_team_history(
             try:
                 _, body, cache_path, cached = future.result()
                 network_calls += int(not cached)
-                record_raw_response(
+                observed_at = record_raw_response(
                     connection,
                     endpoint="/players/teams",
                     params={"player": player_id},
                     body=body,
                     cache_path=cache_path,
                 )
-                observed_at = datetime.now(tz=UTC)
                 rows: list[tuple[object, ...]] = [
                     (
                         player_id,
@@ -884,14 +901,445 @@ def ingest_player_team_history(
                     replace=True,
                 )
                 normalized_rows += len(rows)
+            except DailyQuotaGuard:
+                quota_deferred += 1
             except Exception as exc:
                 failures += 1
                 if len(failure_details) < 10:
                     failure_details.append(f"{player_id}: {exc}")
     return {
         "players": len(unique_ids),
-        "processed": len(selected),
-        "deferred": deferred,
+        "processed": len(selected) - failures - quota_deferred,
+        "deferred": deferred + quota_deferred,
+        "failures": failures,
+        "failure_sample": failure_details,
+        "normalized_rows": normalized_rows,
+        "network_calls": network_calls,
+    }
+
+
+TEAM_PROFILE_COLUMNS = (
+    "team_id",
+    "team_name",
+    "code",
+    "country",
+    "founded",
+    "national",
+    "logo_url",
+    "venue_id",
+    "venue_name",
+    "venue_address",
+    "venue_city",
+    "venue_capacity",
+    "venue_surface",
+    "observed_at",
+)
+
+
+def normalize_team_profile(
+    entry: dict[str, Any], observed_at: datetime
+) -> tuple[object, ...] | None:
+    team = entry.get("team") or entry
+    team_id = _int_or_none(team.get("id"))
+    if team_id is None:
+        return None
+    venue = entry.get("venue") or {}
+    return (
+        team_id,
+        str(team.get("name") or ""),
+        team.get("code"),
+        team.get("country"),
+        _int_or_none(team.get("founded")),
+        team.get("national"),
+        team.get("logo"),
+        _int_or_none(venue.get("id")),
+        venue.get("name"),
+        venue.get("address"),
+        venue.get("city"),
+        _int_or_none(venue.get("capacity")),
+        venue.get("surface"),
+        observed_at,
+    )
+
+
+def ingest_team_profiles(
+    connection: duckdb.DuckDBPyConnection,
+    client: ApiFootballClient,
+    team_ids: list[int],
+    *,
+    workers: int = 4,
+    daily_reserve: int = 100,
+) -> dict[str, object]:
+    """Acquisisce metadati di ogni club referenziato nel corpus."""
+    unique_ids = sorted({team_id for team_id in team_ids if team_id > 0})
+    selected, deferred = _select_cached_and_budgeted_ids(
+        client, "/teams", "id", unique_ids, daily_reserve
+    )
+    network_calls = 0
+    normalized_rows = 0
+    failures = 0
+    quota_deferred = 0
+    failure_details: list[str] = []
+
+    def fetch(team_id: int) -> tuple[int, dict[str, Any], Path, bool]:
+        body, cache_path, cached = client.get("/teams", {"id": team_id})
+        return team_id, body, cache_path, cached
+
+    futures: dict[Future[tuple[int, dict[str, Any], Path, bool]], int] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for team_id in selected:
+            futures[executor.submit(fetch, team_id)] = team_id
+        for future in as_completed(futures):
+            team_id = futures[future]
+            try:
+                _, body, cache_path, cached = future.result()
+                network_calls += int(not cached)
+                observed_at = record_raw_response(
+                    connection,
+                    endpoint="/teams",
+                    params={"id": team_id},
+                    body=body,
+                    cache_path=cache_path,
+                )
+                rows = [
+                    row
+                    for entry in body.get("response") or []
+                    if (row := normalize_team_profile(entry, observed_at)) is not None
+                ]
+                _bulk_insert(
+                    connection,
+                    "api_teams",
+                    TEAM_PROFILE_COLUMNS,
+                    rows,
+                    replace=True,
+                )
+                normalized_rows += len(rows)
+            except DailyQuotaGuard:
+                quota_deferred += 1
+            except Exception as exc:
+                failures += 1
+                if len(failure_details) < 10:
+                    failure_details.append(f"{team_id}: {exc}")
+    return {
+        "teams": len(unique_ids),
+        "processed": len(selected) - failures - quota_deferred,
+        "deferred": deferred + quota_deferred,
+        "failures": failures,
+        "failure_sample": failure_details,
+        "normalized_rows": normalized_rows,
+        "network_calls": network_calls,
+    }
+
+
+LEAGUE_PROFILE_COLUMNS = (
+    "league_id",
+    "league_name",
+    "league_type",
+    "country_name",
+    "country_code",
+    "logo_url",
+    "flag_url",
+    "observed_at",
+)
+LEAGUE_SEASON_COLUMNS = (
+    "league_id",
+    "season_start",
+    "start_date",
+    "end_date",
+    "is_current",
+    "coverage_json",
+    "observed_at",
+)
+
+
+def normalize_league_profile(
+    entry: dict[str, Any], observed_at: datetime
+) -> tuple[tuple[object, ...], list[tuple[object, ...]]] | None:
+    league = entry.get("league") or {}
+    country = entry.get("country") or {}
+    league_id = _int_or_none(league.get("id"))
+    if league_id is None:
+        return None
+    profile: tuple[object, ...] = (
+        league_id,
+        str(league.get("name") or ""),
+        league.get("type"),
+        country.get("name"),
+        country.get("code"),
+        league.get("logo"),
+        country.get("flag"),
+        observed_at,
+    )
+    seasons: list[tuple[object, ...]] = [
+        (
+            league_id,
+            int(season["year"]),
+            season.get("start"),
+            season.get("end"),
+            _bool_or_none(season.get("current")),
+            _stable_json(season.get("coverage") or {}),
+            observed_at,
+        )
+        for season in entry.get("seasons") or []
+        if season.get("year") not in (None, "")
+    ]
+    return profile, seasons
+
+
+def ingest_league_profiles(
+    connection: duckdb.DuckDBPyConnection,
+    client: ApiFootballClient,
+    league_ids: list[int],
+    *,
+    workers: int = 4,
+    daily_reserve: int = 100,
+) -> dict[str, object]:
+    """Acquisisce identità, stagioni e copertura dichiarata delle competizioni."""
+    unique_ids = sorted({league_id for league_id in league_ids if league_id > 0})
+    selected, deferred = _select_cached_and_budgeted_ids(
+        client, "/leagues", "id", unique_ids, daily_reserve
+    )
+    network_calls = 0
+    profile_rows = 0
+    season_rows = 0
+    failures = 0
+    quota_deferred = 0
+    failure_details: list[str] = []
+
+    def fetch(league_id: int) -> tuple[int, dict[str, Any], Path, bool]:
+        body, cache_path, cached = client.get("/leagues", {"id": league_id})
+        return league_id, body, cache_path, cached
+
+    futures: dict[Future[tuple[int, dict[str, Any], Path, bool]], int] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for league_id in selected:
+            futures[executor.submit(fetch, league_id)] = league_id
+        for future in as_completed(futures):
+            league_id = futures[future]
+            try:
+                _, body, cache_path, cached = future.result()
+                network_calls += int(not cached)
+                observed_at = record_raw_response(
+                    connection,
+                    endpoint="/leagues",
+                    params={"id": league_id},
+                    body=body,
+                    cache_path=cache_path,
+                )
+                profiles: list[tuple[object, ...]] = []
+                seasons: list[tuple[object, ...]] = []
+                for entry in body.get("response") or []:
+                    normalized = normalize_league_profile(entry, observed_at)
+                    if normalized is not None:
+                        profile, league_seasons = normalized
+                        profiles.append(profile)
+                        seasons.extend(league_seasons)
+                _bulk_insert(
+                    connection,
+                    "api_leagues",
+                    LEAGUE_PROFILE_COLUMNS,
+                    profiles,
+                    replace=True,
+                )
+                _bulk_insert(
+                    connection,
+                    "api_league_seasons",
+                    LEAGUE_SEASON_COLUMNS,
+                    seasons,
+                    replace=True,
+                )
+                profile_rows += len(profiles)
+                season_rows += len(seasons)
+            except DailyQuotaGuard:
+                quota_deferred += 1
+            except Exception as exc:
+                failures += 1
+                if len(failure_details) < 10:
+                    failure_details.append(f"{league_id}: {exc}")
+    return {
+        "leagues": len(unique_ids),
+        "processed": len(selected) - failures - quota_deferred,
+        "deferred": deferred + quota_deferred,
+        "failures": failures,
+        "failure_sample": failure_details,
+        "profile_rows": profile_rows,
+        "season_rows": season_rows,
+        "network_calls": network_calls,
+    }
+
+
+def ingest_player_available_seasons(
+    connection: duckdb.DuckDBPyConnection,
+    client: ApiFootballClient,
+    player_ids: list[int],
+    *,
+    workers: int = 4,
+    daily_reserve: int = 100,
+) -> dict[str, object]:
+    """Acquisisce l'indice delle stagioni disponibili per ogni giocatore."""
+    unique_ids = sorted({player_id for player_id in player_ids if player_id > 0})
+    selected, deferred = _select_cached_and_budgeted_ids(
+        client, "/players/seasons", "player", unique_ids, daily_reserve
+    )
+    network_calls = 0
+    normalized_rows = 0
+    failures = 0
+    quota_deferred = 0
+    failure_details: list[str] = []
+
+    def fetch(player_id: int) -> tuple[int, dict[str, Any], Path, bool]:
+        body, cache_path, cached = client.get("/players/seasons", {"player": player_id})
+        return player_id, body, cache_path, cached
+
+    futures: dict[Future[tuple[int, dict[str, Any], Path, bool]], int] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for player_id in selected:
+            futures[executor.submit(fetch, player_id)] = player_id
+        for future in as_completed(futures):
+            player_id = futures[future]
+            try:
+                _, body, cache_path, cached = future.result()
+                network_calls += int(not cached)
+                observed_at = record_raw_response(
+                    connection,
+                    endpoint="/players/seasons",
+                    params={"player": player_id},
+                    body=body,
+                    cache_path=cache_path,
+                )
+                rows: list[tuple[object, ...]] = [
+                    (player_id, int(season), observed_at)
+                    for season in body.get("response") or []
+                    if season not in (None, "")
+                ]
+                _bulk_insert(
+                    connection,
+                    "api_player_available_seasons",
+                    ("api_player_id", "season_start", "observed_at"),
+                    rows,
+                    replace=True,
+                )
+                normalized_rows += len(rows)
+            except DailyQuotaGuard:
+                quota_deferred += 1
+            except Exception as exc:
+                failures += 1
+                if len(failure_details) < 10:
+                    failure_details.append(f"{player_id}: {exc}")
+    return {
+        "players": len(unique_ids),
+        "processed": len(selected) - failures - quota_deferred,
+        "deferred": deferred + quota_deferred,
+        "failures": failures,
+        "failure_sample": failure_details,
+        "normalized_rows": normalized_rows,
+        "network_calls": network_calls,
+    }
+
+
+PLAYER_TROPHY_COLUMNS = (
+    "trophy_id",
+    "api_player_id",
+    "league_name",
+    "country_name",
+    "season",
+    "place",
+    "observed_at",
+)
+
+
+def normalize_player_trophy(
+    player_id: int, entry: dict[str, Any], observed_at: datetime
+) -> tuple[object, ...] | None:
+    league_name = str(entry.get("league") or "")
+    season = str(entry.get("season") or "")
+    place = str(entry.get("place") or "")
+    if not league_name or not season or not place:
+        return None
+    country_name = entry.get("country")
+    identity = _stable_json(
+        {
+            "player": player_id,
+            "league": league_name,
+            "country": country_name,
+            "season": season,
+            "place": place,
+        }
+    )
+    trophy_id = hashlib.sha256(identity.encode()).hexdigest()
+    return (
+        trophy_id,
+        player_id,
+        league_name,
+        country_name,
+        season,
+        place,
+        observed_at,
+    )
+
+
+def ingest_player_trophies(
+    connection: duckdb.DuckDBPyConnection,
+    client: ApiFootballClient,
+    player_ids: list[int],
+    *,
+    workers: int = 4,
+    daily_reserve: int = 100,
+) -> dict[str, object]:
+    """Acquisisce il palmarès dichiarato dal provider per ogni giocatore."""
+    unique_ids = sorted({player_id for player_id in player_ids if player_id > 0})
+    selected, deferred = _select_cached_and_budgeted_ids(
+        client, "/trophies", "player", unique_ids, daily_reserve
+    )
+    network_calls = 0
+    normalized_rows = 0
+    failures = 0
+    quota_deferred = 0
+    failure_details: list[str] = []
+
+    def fetch(player_id: int) -> tuple[int, dict[str, Any], Path, bool]:
+        body, cache_path, cached = client.get("/trophies", {"player": player_id})
+        return player_id, body, cache_path, cached
+
+    futures: dict[Future[tuple[int, dict[str, Any], Path, bool]], int] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for player_id in selected:
+            futures[executor.submit(fetch, player_id)] = player_id
+        for future in as_completed(futures):
+            player_id = futures[future]
+            try:
+                _, body, cache_path, cached = future.result()
+                network_calls += int(not cached)
+                observed_at = record_raw_response(
+                    connection,
+                    endpoint="/trophies",
+                    params={"player": player_id},
+                    body=body,
+                    cache_path=cache_path,
+                )
+                rows = [
+                    row
+                    for entry in body.get("response") or []
+                    if (row := normalize_player_trophy(player_id, entry, observed_at)) is not None
+                ]
+                _bulk_insert(
+                    connection,
+                    "api_player_trophies",
+                    PLAYER_TROPHY_COLUMNS,
+                    rows,
+                    replace=True,
+                )
+                normalized_rows += len(rows)
+            except DailyQuotaGuard:
+                quota_deferred += 1
+            except Exception as exc:
+                failures += 1
+                if len(failure_details) < 10:
+                    failure_details.append(f"{player_id}: {exc}")
+    return {
+        "players": len(unique_ids),
+        "processed": len(selected) - failures - quota_deferred,
+        "deferred": deferred + quota_deferred,
         "failures": failures,
         "failure_sample": failure_details,
         "normalized_rows": normalized_rows,
@@ -1669,8 +2117,9 @@ def ingest_fixture_history(
     }
 
 
-def normalize_transfer_entries(entries: list[dict[str, Any]]) -> list[tuple[object, ...]]:
-    observed_at = datetime.now(tz=UTC)
+def normalize_transfer_entries(
+    entries: list[dict[str, Any]], observed_at: datetime
+) -> list[tuple[object, ...]]:
     unique: dict[tuple[object, ...], tuple[object, ...]] = {}
     for entry in entries:
         player = entry.get("player") or {}
@@ -1720,14 +2169,14 @@ def ingest_team_transfers(
         params: dict[str, object] = {"team": team_id}
         body, cache_path, cached = client.get("/transfers", params, refresh=refresh)
         network_calls += int(not cached)
-        record_raw_response(
+        observed_at = record_raw_response(
             connection,
             endpoint="/transfers",
             params=params,
             body=body,
             cache_path=cache_path,
         )
-        rows = normalize_transfer_entries(list(body.get("response") or []))
+        rows = normalize_transfer_entries(list(body.get("response") or []), observed_at)
         _bulk_insert(
             connection,
             "api_player_transfers",
@@ -1756,12 +2205,13 @@ def ingest_player_transfers(
 ) -> dict[str, object]:
     """Acquisisce lo storico trasferimenti per una coorte, riprendendo dalla cache."""
     unique_ids = sorted({player_id for player_id in player_ids if player_id > 0})
-    selected, deferred = _select_cached_and_budgeted_player_ids(
-        client, "/transfers", unique_ids, daily_reserve
+    selected, deferred = _select_cached_and_budgeted_ids(
+        client, "/transfers", "player", unique_ids, daily_reserve
     )
     network_calls = 0
     normalized_rows = 0
     failures = 0
+    quota_deferred = 0
     failure_details: list[str] = []
 
     def fetch(player_id: int) -> tuple[int, dict[str, Any], Path, bool]:
@@ -1777,14 +2227,16 @@ def ingest_player_transfers(
             try:
                 _, body, cache_path, cached = future.result()
                 network_calls += int(not cached)
-                record_raw_response(
+                observed_at = record_raw_response(
                     connection,
                     endpoint="/transfers",
                     params={"player": player_id},
                     body=body,
                     cache_path=cache_path,
                 )
-                rows = normalize_transfer_entries(list(body.get("response") or []))
+                rows = normalize_transfer_entries(
+                    list(body.get("response") or []), observed_at
+                )
                 _bulk_insert(
                     connection,
                     "api_player_transfers",
@@ -1793,6 +2245,8 @@ def ingest_player_transfers(
                     replace=True,
                 )
                 normalized_rows += len(rows)
+            except DailyQuotaGuard:
+                quota_deferred += 1
             except Exception as exc:
                 failures += 1
                 if len(failure_details) < 10:
@@ -1800,8 +2254,8 @@ def ingest_player_transfers(
     stored_row = connection.execute("SELECT count(*) FROM api_player_transfers").fetchone()
     return {
         "players": len(unique_ids),
-        "processed": len(selected),
-        "deferred": deferred,
+        "processed": len(selected) - failures - quota_deferred,
+        "deferred": deferred + quota_deferred,
         "failures": failures,
         "failure_sample": failure_details,
         "normalized_rows": normalized_rows,
@@ -1810,8 +2264,9 @@ def ingest_player_transfers(
     }
 
 
-def normalize_sidelined_entries(entries: list[dict[str, Any]]) -> list[tuple[object, ...]]:
-    observed_at = datetime.now(tz=UTC)
+def normalize_sidelined_entries(
+    entries: list[dict[str, Any]], observed_at: datetime
+) -> list[tuple[object, ...]]:
     rows: list[tuple[object, ...]] = []
     for entry in entries:
         player_id = _int_or_none(entry.get("id"))
@@ -1849,7 +2304,7 @@ def ingest_sidelined_history(
         params: dict[str, object] = {"players": "-".join(str(item) for item in chunk)}
         body, cache_path, cached = client.get("/sidelined", params, refresh=refresh)
         network_calls += int(not cached)
-        record_raw_response(
+        observed_at = record_raw_response(
             connection,
             endpoint="/sidelined",
             params=params,
@@ -1860,7 +2315,7 @@ def ingest_sidelined_history(
         players_returned.update(
             int(entry["id"]) for entry in entries if _int_or_none(entry.get("id")) is not None
         )
-        rows = normalize_sidelined_entries(entries)
+        rows = normalize_sidelined_entries(entries, observed_at)
         _bulk_insert(
             connection,
             "api_player_sidelined",
