@@ -58,6 +58,9 @@ def test_corpus_export_is_portable_complete_and_verifiable(tmp_path: Path) -> No
     assert "source_path" not in {
         column["name"] for column in manifest["tables"]["listone_snapshots"]["schema"]
     }
+    assert "source_url" in {
+        column["name"] for column in manifest["tables"]["listone_snapshots"]["schema"]
+    }
     assert "payload_path" not in {
         column["name"] for column in manifest["tables"]["api_raw_responses"]["schema"]
     }

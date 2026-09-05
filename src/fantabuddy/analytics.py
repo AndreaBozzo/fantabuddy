@@ -5,7 +5,7 @@ import math
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import duckdb
 import numpy as np
@@ -13,7 +13,7 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error
 
 from fantabuddy.availability import train_availability_models
-from fantabuddy.config import ROLES, LeagueConfig, ScoringConfig
+from fantabuddy.config import MANTRA_ROLES, ROLES, LeagueConfig, ScoringConfig
 
 FEATURE_NAMES = (
     "quote_initial",
@@ -93,12 +93,16 @@ def spearman(left: np.ndarray, right: np.ndarray) -> float:
     return float(np.corrcoef(left_rank, right_rank)[0, 1])
 
 
-def _rows(connection: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
+def _rows(
+    connection: duckdb.DuckDBPyConnection,
+    system: Literal["classic", "mantra"] = "classic",
+) -> list[dict[str, Any]]:
     columns = [
         "season",
         "season_start",
         "fantacalcio_id",
         "classic_role",
+        "role",
         "name",
         "team",
         "quote_current",
@@ -107,15 +111,35 @@ def _rows(connection: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
         "fvm",
         "status",
     ]
+    role_expression = (
+        "classic_role"
+        if system == "classic"
+        else "upper(replace(replace(mantra_roles, '|', ';'), '/', ';'))"
+    )
+    quote_current = "quote_current" if system == "classic" else "mantra_quote_current"
+    quote_initial = "quote_initial" if system == "classic" else "mantra_quote_initial"
+    quote_diff = "quote_diff" if system == "classic" else "mantra_quote_diff"
+    fvm = "fvm" if system == "classic" else "fvm_mantra"
     raw = connection.execute(
-        """
+        f"""
         SELECT season, CAST(split_part(season, '/', 1) AS INTEGER), fantacalcio_id,
-               classic_role, name, team, quote_current, quote_initial, quote_diff, fvm, status
+               classic_role, {role_expression}, name, team, {quote_current}, {quote_initial},
+               {quote_diff}, {fvm}, status
         FROM latest_listone_players
+        WHERE fvm_available
         ORDER BY fantacalcio_id, season
         """
     ).fetchall()
-    return [dict(zip(columns, row, strict=True)) for row in raw]
+    result = [dict(zip(columns, row, strict=True)) for row in raw]
+    if system == "mantra":
+        allowed = set(MANTRA_ROLES)
+        for row in result:
+            player_roles = set(str(row["role"]).split(";"))
+            if not player_roles or not player_roles <= allowed:
+                raise ValueError(
+                    f"ruoli Mantra non validi per ID {row['fantacalcio_id']}: {row['role']!r}"
+                )
+    return result
 
 
 def _api_features(connection: duckdb.DuckDBPyConnection) -> dict[tuple[int, int], dict[str, float]]:
@@ -177,9 +201,12 @@ def _api_features(connection: duckdb.DuckDBPyConnection) -> dict[tuple[int, int]
     }
 
 
-def build_examples(connection: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
+def build_examples(
+    connection: duckdb.DuckDBPyConnection,
+    system: Literal["classic", "mantra"] = "classic",
+) -> list[dict[str, Any]]:
     history: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for row in _rows(connection):
+    for row in _rows(connection, system):
         history[int(row["fantacalcio_id"])].append(row)
     api = _api_features(connection)
     examples: list[dict[str, Any]] = []
@@ -208,7 +235,7 @@ def build_examples(connection: duckdb.DuckDBPyConnection) -> list[dict[str, Any]
                     "prev_quote_diff": float(previous["quote_diff"]),
                     "prev_fvm": float(previous["fvm"]),
                     "seasons_seen": float(index),
-                    "role_changed": float(previous["classic_role"] != current["classic_role"]),
+                    "role_changed": float(previous["role"] != current["role"]),
                     "team_changed": float(previous["team"] != current["team"]),
                     "prev_minutes": previous_api.get("minutes", 0.0),
                     "prev_goals": previous_api.get("goals", 0.0),
@@ -354,20 +381,21 @@ def train_and_project(
     as_of: date | None = None,
     scoring: ScoringConfig | None = None,
     use_official_fvm_anchor: bool = True,
+    system: Literal["classic", "mantra"] = "classic",
 ) -> tuple[list[Projection], list[ModelMetric]]:
     as_of = as_of or date.today()
     scoring = scoring or ScoringConfig()
     overrides, injured_players = _current_context(connection, target_season, as_of)
     target_start = int(target_season.split("/", maxsplit=1)[0])
     api = _api_features(connection)
-    examples = build_examples(connection)
+    examples = build_examples(connection, system)
     train_completed = [row for row in examples if int(row["season_start"]) < target_start]
     target_by_id = {
         int(row["fantacalcio_id"]): row
         for row in examples
         if row["season"] == target_season and row["status"] == "active"
     }
-    for row in _rows(connection):
+    for row in _rows(connection, system):
         if row["season"] != target_season or row["status"] != "active":
             continue
         player_id = int(row["fantacalcio_id"])
@@ -610,7 +638,7 @@ def train_and_project(
                     fantacalcio_id=int(row["fantacalcio_id"]),
                     name=str(row["name"]),
                     team=str(row["team"]),
-                    role=role,
+                    role=str(row["role"]),
                     status=str(row["status"]),
                     official_quote=int(row["quote_current"]),
                     official_fvm=int(row["fvm"]),
@@ -685,25 +713,70 @@ def allocate_prices(projections: list[Projection], config: LeagueConfig) -> None
     extra_budget = config.total_budget - base_budget
     if extra_budget < 0:
         raise ValueError("budget insufficiente per garantire la base d'asta a ogni slot")
-    role_extras = _largest_remainder(
-        extra_budget, [config.role_budget_shares[role] for role in ROLES]
-    )
-    for role, role_extra in zip(ROLES, role_extras, strict=True):
+    if config.system == "classic":
+        pools = [
+            (
+                role,
+                config.teams * config.roster[role],
+                config.role_budget_shares[role],
+                config.player_price_caps[role],
+                role,
+            )
+            for role in ROLES
+        ]
+    else:
+        goalkeeper_share = config.mantra.goalkeeper_budget_share
+        pools = [
+            (
+                "POR",
+                config.teams * config.mantra.goalkeepers,
+                goalkeeper_share,
+                config.mantra.goalkeeper_price_cap,
+                "POR",
+            ),
+            (
+                "movimento",
+                config.teams * (config.mantra.roster_size - config.mantra.goalkeepers),
+                1.0 - goalkeeper_share,
+                config.mantra.movement_price_cap,
+                "MOVIMENTO",
+            ),
+        ]
+    pool_extras = _largest_remainder(extra_budget, [pool[2] for pool in pools])
+    for (pool_name, required, _, cap, selector), pool_extra in zip(
+        pools, pool_extras, strict=True
+    ):
+        if config.system == "classic":
+            candidates_source = (
+                projection for projection in projections if projection.role == selector
+            )
+        elif selector == "POR":
+            candidates_source = (
+                projection
+                for projection in projections
+                if "POR" in projection.role.split(";")
+            )
+        else:
+            candidates_source = (
+                projection
+                for projection in projections
+                if "POR" not in projection.role.split(";")
+            )
         candidates = sorted(
-            (projection for projection in projections if projection.role == role),
+            candidates_source,
             key=lambda projection: (-projection.projected_score, projection.fantacalcio_id),
         )
-        required = config.teams * config.roster[role]
         if len(candidates) < required:
-            raise ValueError(f"giocatori {role} insufficienti: {len(candidates)} < {required}")
+            raise ValueError(
+                f"giocatori {pool_name} insufficienti: {len(candidates)} < {required}"
+            )
         rosterable = candidates[:required]
         replacement = rosterable[-1].projected_score
         weights = [
             max(projection.projected_score - replacement, 0.01) ** config.price_curve_gamma
             for projection in rosterable
         ]
-        cap = config.player_price_caps[role]
-        extras = _capped_allocation(role_extra, weights, [cap - min_bid] * len(rosterable))
+        extras = _capped_allocation(pool_extra, weights, [cap - min_bid] * len(rosterable))
         for rank, (projection, extra) in enumerate(zip(rosterable, extras, strict=True), start=1):
             projection.rosterable = True
             projection.suggested_credits = min_bid + extra

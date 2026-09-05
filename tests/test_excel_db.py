@@ -127,7 +127,7 @@ def test_reads_single_sheet_league_export_with_explicit_season(tmp_path: Path) -
             "Costo",
         ]
     )
-    sheet.append([1, "Attivo", None, "Inter", 24, "A", "Pc", 1, 6, 6, 120, 20])
+    sheet.append([1, "Attivo", None, "Inter", 24, "A", "W/Pc", 1, 6, 6, 120, 20])
     sheet.append([2, "Fuori", "*", "Roma", 30, "D", "Dc", 0, 0, 0, 2, 1])
     workbook.save(path)
 
@@ -140,6 +140,8 @@ def test_reads_single_sheet_league_export_with_explicit_season(tmp_path: Path) -
     assert data.ceduti_count == 1
     assert data.records[0].quote_current == 20
     assert data.records[0].fvm == 120
+    assert data.records[0].mantra_roles == "W;PC"
+    assert data.records[1].mantra_roles == "DC"
     assert data.records[1].status == "ceduto"
 
     canonical_path = write_listone(

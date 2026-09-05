@@ -8,6 +8,8 @@ from pathlib import Path
 from openpyxl import load_workbook
 from pydantic import BaseModel
 
+from fantabuddy.config import MANTRA_ROLES
+
 EXPECTED_SHEETS = (
     "Tutti",
     "Portieri",
@@ -62,6 +64,7 @@ class ListoneRecord(BaseModel):
     mantra_quote_diff: int
     fvm: int
     fvm_mantra: int
+    fvm_available: bool = True
     status: str
     source_sheet: str
     source_row: int
@@ -75,6 +78,7 @@ class ListoneImport(BaseModel):
     checksum: str
     source_modified_at: datetime
     records: list[ListoneRecord]
+    source_url: str | None = None
 
     @property
     def active_count(self) -> int:
@@ -123,6 +127,17 @@ def _as_int(value: object, field: str, row_number: int) -> int:
         ) from exc
 
 
+def normalize_mantra_roles(value: object, row_number: int) -> str:
+    roles = tuple(
+        role.strip().upper() for role in re.split(r"[;/|]", str(value or "")) if role.strip()
+    )
+    if not roles or any(role not in MANTRA_ROLES for role in roles):
+        raise ValueError(f"ruoli Mantra non validi alla riga {row_number}: {value!r}")
+    if len(roles) != len(set(roles)):
+        raise ValueError(f"ruoli Mantra duplicati alla riga {row_number}: {value!r}")
+    return ";".join(roles)
+
+
 def _read_sheet(workbook: object, name: str, status: str) -> list[ListoneRecord]:
     sheet = workbook[name]  # type: ignore[index]
     headers = tuple(cell.value for cell in sheet[2])
@@ -140,7 +155,7 @@ def _read_sheet(workbook: object, name: str, status: str) -> list[ListoneRecord]
         record = ListoneRecord(
             fantacalcio_id=_as_int(values[0], "Id", row_number),
             classic_role=str(values[1]).strip(),
-            mantra_roles=str(values[2] or "").strip(),
+            mantra_roles=normalize_mantra_roles(values[2], row_number),
             name=str(values[3]).strip(),
             team=str(values[4]).strip(),
             quote_current=_as_int(values[5], "Qt.A", row_number),
@@ -188,7 +203,7 @@ def _read_league_export(workbook: object, name: str) -> list[ListoneRecord]:
         record = ListoneRecord(
             fantacalcio_id=_as_int(values[0], "#", row_number),
             classic_role=str(values[5]).strip(),
-            mantra_roles=str(values[6] or "").strip(),
+            mantra_roles=normalize_mantra_roles(values[6], row_number),
             name=str(values[1]).strip(),
             team=str(values[3]).strip(),
             quote_current=quote,

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
 ROLES = ("P", "D", "C", "A")
+MANTRA_ROLES = ("POR", "DD", "DS", "DC", "B", "E", "M", "C", "T", "W", "A", "PC")
 
 
 class ScoringConfig(BaseModel):
@@ -60,8 +62,17 @@ class LineupRulesConfig(BaseModel):
     substitutions: int = Field(default=5, ge=0)
 
 
+class MantraConfig(BaseModel):
+    roster_size: int = Field(default=28, ge=23)
+    goalkeepers: int = Field(default=3, ge=2)
+    goalkeeper_budget_share: float = Field(default=0.08, gt=0, lt=1)
+    goalkeeper_price_cap: int = Field(default=90, ge=1)
+    movement_price_cap: int = Field(default=500, ge=1)
+
+
 class LeagueConfig(BaseModel):
     name: str = "Classic 10 - 1000"
+    system: Literal["classic", "mantra"] = "classic"
     teams: int = Field(default=10, ge=2)
     budget: int = Field(default=1000, ge=25)
     roster: dict[str, int] = Field(default_factory=lambda: {"P": 3, "D": 8, "C": 8, "A": 6})
@@ -76,33 +87,48 @@ class LeagueConfig(BaseModel):
     goal_bands: GoalBandsConfig = Field(default_factory=GoalBandsConfig)
     auction: AuctionRulesConfig = Field(default_factory=AuctionRulesConfig)
     lineup: LineupRulesConfig = Field(default_factory=LineupRulesConfig)
+    mantra: MantraConfig = Field(default_factory=MantraConfig)
     rules_source: str | None = None
     strategy_notes: list[str] = Field(default_factory=list)
     price_curve_gamma: float = Field(default=1.15, gt=0)
 
     @model_validator(mode="after")
     def validate_roles(self) -> LeagueConfig:
-        if set(self.roster) != set(ROLES):
-            raise ValueError(f"roster deve contenere esattamente {ROLES}")
-        if set(self.role_budget_shares) != set(ROLES):
-            raise ValueError(f"role_budget_shares deve contenere esattamente {ROLES}")
-        if set(self.player_price_caps) != set(ROLES):
-            raise ValueError(f"player_price_caps deve contenere esattamente {ROLES}")
-        if any(value <= 0 for value in self.roster.values()):
-            raise ValueError("ogni ruolo deve avere almeno uno slot")
-        if abs(sum(self.role_budget_shares.values()) - 1.0) > 1e-9:
-            raise ValueError("le quote di budget per ruolo devono sommare a 1")
-        if any(value < 1 for value in self.player_price_caps.values()):
-            raise ValueError("ogni tetto di prezzo deve essere almeno 1")
-        if any(value < self.auction.min_bid for value in self.player_price_caps.values()):
-            raise ValueError("ogni tetto di prezzo deve essere almeno pari alla base d'asta")
+        if self.system == "classic":
+            if set(self.roster) != set(ROLES):
+                raise ValueError(f"roster deve contenere esattamente {ROLES}")
+            if set(self.role_budget_shares) != set(ROLES):
+                raise ValueError(f"role_budget_shares deve contenere esattamente {ROLES}")
+            if set(self.player_price_caps) != set(ROLES):
+                raise ValueError(f"player_price_caps deve contenere esattamente {ROLES}")
+            if any(value <= 0 for value in self.roster.values()):
+                raise ValueError("ogni ruolo deve avere almeno uno slot")
+            if abs(sum(self.role_budget_shares.values()) - 1.0) > 1e-9:
+                raise ValueError("le quote di budget per ruolo devono sommare a 1")
+            if any(value < 1 for value in self.player_price_caps.values()):
+                raise ValueError("ogni tetto di prezzo deve essere almeno 1")
+            if any(value < self.auction.min_bid for value in self.player_price_caps.values()):
+                raise ValueError("ogni tetto di prezzo deve essere almeno pari alla base d'asta")
+        else:
+            if self.mantra.goalkeepers >= self.mantra.roster_size:
+                raise ValueError("gli slot portiere Mantra devono essere meno della rosa")
+            if min(
+                self.mantra.goalkeeper_price_cap,
+                self.mantra.movement_price_cap,
+            ) < self.auction.min_bid:
+                raise ValueError("ogni tetto Mantra deve essere almeno pari alla base d'asta")
         if self.total_budget < self.total_slots * self.auction.min_bid:
             raise ValueError("budget insufficiente per garantire la base d'asta a ogni slot")
         return self
 
     @property
     def total_slots(self) -> int:
-        return self.teams * sum(self.roster.values())
+        roster_size = (
+            sum(self.roster.values())
+            if self.system == "classic"
+            else self.mantra.roster_size
+        )
+        return self.teams * roster_size
 
     @property
     def total_budget(self) -> int:

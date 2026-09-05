@@ -30,3 +30,14 @@ def test_enabled_defense_modifier_requires_ordered_bands() -> None:
                 ],
             }
         )
+
+
+def test_mantra_uses_free_roster_with_two_or_more_goalkeepers() -> None:
+    config = LeagueConfig(
+        system="mantra",
+        mantra={"roster_size": 25, "goalkeepers": 2},
+    )
+
+    assert config.total_slots == 250
+    with pytest.raises(ValidationError, match="greater than or equal to 2"):
+        LeagueConfig(system="mantra", mantra={"goalkeepers": 1})

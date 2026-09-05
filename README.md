@@ -1,453 +1,147 @@
 # Fantabuddy
 
-Preparo l'asta del Fantacalcio con i dati invece che con le sensazioni. Scarichi il
-listone ufficiale, lanci un comando e ti ritrovi un report HTML da aprire al tavolo
-dell'asta: prezzi consigliati, probabili titolari, alert infortuni. Funziona offline,
-perché al tavolo dell'asta il wifi è sempre una leggenda.
+### Il tuo storico Fantacalcio, finalmente interrogabile.
 
-È un progetto per hobby, nato per la mia lega — 10 squadre, 1000 crediti, rose
-3P/8D/8C/6A — ma sono tutti numeri che si cambiano in `config/league.default.yaml`.
-Il profilo predefinito resta volutamente generico: quando una regola non è nota viene
-mostrata come *non specificata*, senza inventare dettagli per chi vuole soltanto un
-report pronto da usare.
+[![CI](https://github.com/AndreaBozzo/fantabuddy/actions/workflows/ci.yml/badge.svg)](https://github.com/AndreaBozzo/fantabuddy/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/AndreaBozzo/fantabuddy)](https://github.com/AndreaBozzo/fantabuddy/releases)
+[![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-📖 La storia per esteso: [Ho costruito un modello per il Fantacalcio](https://andreabozzo.github.io/AndreaBozzo/blog/posts/fantabuddy-blog/) ·
-[English version](https://andreabozzo.github.io/AndreaBozzo/blog/en/posts/fantabuddy-blog/)
+Fantabuddy trasforma listoni ufficiali e dati calcistici in un warehouse DuckDB locale,
+un report d'asta Classic o Mantra che funziona offline e snapshot Parquet verificabili.
+Nessun account, nessun server da mantenere, nessun dato personale inviato altrove.
 
-*English readers: this README and the code comments are in Italian, like the league they
-were built for — the [write-up](https://andreabozzo.github.io/AndreaBozzo/blog/en/posts/fantabuddy-blog/)
-covers the whole project in English.*
+![Il report Fantabuddy: stato della lega, budget e segnali principali](docs/images/report-top.webp)
 
-![Il report Fantabuddy: snapshot corrente e il mercato in cinque numeri](docs/images/report-top.webp)
+> Le feature passano. Lo storico resta.
 
-## Cosa ti ritrovi in mano
+## Perché esiste
 
-**Un prezzo per ogni giocatore che puoi davvero comprare.** Dieci rose da venticinque
-slot fanno 250 giocatori, e i 10.000 crediti della lega vengono distribuiti fino
-all'ultimo credito. Tutti gli altri restano in fascia E a 1 credito: il modello continua
-a ordinarli, il budget non li vede.
+Un listone fotografa un momento. Dopo pochi mesi è difficile ricordare chi ha cambiato
+ruolo, quanto valeva, quando è diventato titolare o quanto fosse affidabile quel dato.
+Fantabuddy conserva queste osservazioni nel tempo e prova a rispondere a domande più
+utili di “chi compro?”:
 
-![Prime scelte per ruolo: portieri, difensori, centrocampisti e attaccanti](docs/images/report-roles.webp)
+- cosa è cambiato dall'ultimo snapshot;
+- quali giocatori stanno guadagnando o perdendo spazio;
+- quali segnali sono freschi, coperti e verificabili;
+- quanto una valutazione dipende dal modello e quanto dal mercato ufficiale.
 
-**I segnali da guardare prima di sedersi al tavolo.** Titolari probabili sotto i 40
-crediti, infortuni ancora aperti da verificare, trasferimenti dell'ultimo mese e cosa è
-cambiato rispetto al listone precedente.
+Il risultato rimane volutamente piccolo: **DuckDB + pipeline Python + report statico**.
 
-![Segnali operativi: titolarità a costo contenuto, alert e trasferimenti](docs/images/report-signals.webp)
+## Cosa ottieni
 
-**Un ranking che puoi filtrare mentre l'asta va avanti.** Cerchi un nome, imposti un
-tetto di spesa, ordini per qualsiasi colonna. È tutto dentro un unico file HTML: niente
-server, niente internet, niente notebook aperto a metà.
+### Un archivio ufficiale in un comando
 
-![Ranking completo con filtri per ruolo, fascia, squadra e crediti](docs/images/report-ranking.webp)
+I listoni Fantacalcio dal 2015/16 alla stagione corrente vengono scaricati dalle pagine
+ufficiali, validati e conservati con URL e checksum. Il floor è configurabile.
 
-## Come si usa
+```powershell
+uv run fantabuddy ingest-official-listones --history-start 2015
+```
 
-Servono Python 3.12, [uv](https://docs.astral.sh/uv/) e il listone ufficiale già
-scaricato (`Quotazioni_Fantacalcio_Stagione_*.xlsx`).
+### Un report da portare all'asta
 
-Da un clone o da un archivio appena scaricato, l'installazione riproducibile usa il
-lockfile versionato:
+Prezzi coerenti con il budget della tua lega, ranking filtrabile, delta dal report
+precedente, titolarità, trasferimenti e alert disponibilità. In Mantra usa ruoli multipli,
+quotazioni e FVM dedicati. È un singolo HTML: lo apri nel browser e continua a funzionare
+senza rete.
+
+![Prime scelte per ruolo nel report Fantabuddy](docs/images/report-roles.webp)
+
+![Ranking Mantra con ruoli multipli e valori dedicati](docs/images/report-mantra.webp)
+
+![Segnali operativi, cambiamenti e alert](docs/images/report-signals.webp)
+
+### Un corpus che puoi tenere
+
+Il warehouse cresce a ogni snapshot. I payload API restano archiviati per contenuto; il
+corpus normalizzato si esporta in Parquet ordinati con manifest, schema, conteggi e
+SHA-256.
+
+```powershell
+uv run fantabuddy export-corpus --snapshot-id my-corpus
+uv run fantabuddy verify-corpus-export outputs/corpus/my-corpus
+```
+
+## Parti in due minuti
+
+Servono Python 3.12 e [uv](https://docs.astral.sh/uv/).
 
 ```powershell
 git clone https://github.com/AndreaBozzo/fantabuddy.git
 Set-Location fantabuddy
 uv sync --locked
-uv run fantabuddy --help
-```
-
-Per contribuire e lanciare anche test, lint e type checking usare invece
-`uv sync --all-groups --locked`. Warehouse, cache API, listoni e output sono esclusi da
-Git: un nuovo utente parte intenzionalmente da un database vuoto e lo alimenta con i
-propri dati.
-
-📥 **[Scarica il listone](https://www.fantacalcio.it/api/v1/Excel/prices/21/1)** — è il
-link diretto dietro al bottone *Scarica* di
-[fantacalcio.it/quotazioni-fantacalcio](https://www.fantacalcio.it/quotazioni-fantacalcio).
-Funziona solo se sei loggato sul sito: da sloggato risponde 401 e non scarica niente.
-Salvalo dove vuoi, poi passi quella cartella a `--listoni-dir`.
-
-È supportato anche l'export a foglio singolo di una lega
-(`lista_calciatori_*.xlsx`). Se nella stessa giornata sono presenti entrambe le fonti,
-il listone ufficiale multi-foglio resta quella canonica; l'export di lega viene usato
-come riscontro indipendente. Poiché il suo filename non contiene la stagione, quando lo
-si importa da solo va indicata esplicitamente:
-
-```powershell
-uv run fantabuddy import-listoni `
-  "$env:USERPROFILE\Downloads\lista_calciatori_nome-lega.xlsx" `
-  --season "2026/27"
-```
-
-```powershell
-uv sync --all-groups
-uv run fantabuddy run `
-  --listoni-dir "$env:USERPROFILE\Downloads" `
-  --season "2026/27" `
-  --as-of "2026-08-18" `
-  --kind preseason
-```
-
-Il report finisce in `outputs/<build-id>/report.html`. Aprilo col browser e sei a posto.
-
-### Più leghe, stesso warehouse
-
-Per una seconda lega basta copiare il file YAML, cambiare i soli parametri conosciuti e
-scegliere una directory di output. Dati, modelli e mapping restano condivisi: non serve
-duplicare il warehouse né mantenere versioni diverse del codice.
-
-```powershell
-Copy-Item config/league.default.yaml config/league.amici.yaml
-uv run fantabuddy build `
-  --season "2026/27" `
-  --as-of "2026-09-01" `
-  --kind september `
-  --config config/league.amici.yaml `
-  --output-dir outputs/amici
-```
-
-`teams`, `budget`, rose, ripartizione e tetti per ruolo, base d'asta, fasce gol,
-modificatore difesa, bonus/malus, panchina, sostituzioni e regole di svincolo sono tutti
-configurabili. I campi amministrativi sconosciuti possono restare `null`. Le build di
-leghe diverse non si contaminano: il delta cerca prima l'ultimo snapshot con la stessa
-configurazione economica.
-
-Per collegare anche lo storico di API-Football — rose, minuti, infortuni, partite — serve
-una chiave del provider: la sezione **Setup completo** qui sotto spiega tutto.
-
-## Di cosa fidarsi, e di cosa no
-
-In fondo al report c'è tutto quello che serve per non fidarsi a scatola chiusa: quali
-modelli sono stati ammessi, quanta copertura c'è sui dati e quando ogni fonte è stata
-osservata.
-
-![Metodo, copertura e freschezza delle fonti](docs/images/report-method.webp)
-
-Tre avvertenze che contano più di qualsiasi numero:
-
-- **il rating è quello del provider, non il voto ufficiale del Fantacalcio**: tutto
-  quello che stimo è un'approssimazione di quello che la tua lega assegna davvero;
-- **gli infortuni sono alert da verificare**, non cartelle cliniche: a volte il provider
-  non ha l'episodio, a volte ne ha uno vecchio;
-- **FVM e quotazioni sono riferimenti di mercato**, non prezzi già spendibili.
-
-Nessun modello entra nel report se non batte una baseline semplice. Titolarità e minuti
-devono migliorarla di almeno l'1% sull'ultima stagione conclusa, tenuta fuori
-dall'addestramento; il punteggio stagionale di almeno il 3% in un backtest walk-forward.
-Quando non ce la fanno — quest'anno gli attaccanti — nel report entra la baseline, e va
-benissimo così.
-
-## Come nascono i prezzi
-
-Dentro un ruolo i soldi non seguono lo score: seguono la distanza tra il giocatore e il
-primo che resta fuori da tutte le rose. Poi c'è un tetto per ruolo (90 ai portieri, 130
-ai difensori, 280 ai centrocampisti, 500 agli attaccanti) e una divisione del budget per
-reparto: 48% attacco, 28% centrocampo, 16% difesa, 8% porta.
-
-Quel 48% non è una verità rivelata, è una scommessa su come si comporta la mia lega
-all'asta. Se nella tua i portieri volano a 100 crediti, cambia il numero in
-`config/league.default.yaml`: il report si riallinea da solo e la build fallisce se i
-conti non tornano esattamente a 10.000.
-
-<details>
-<summary><b>Cosa produce, nel dettaglio</b></summary>
-
-### Cosa produce
-
-- warehouse DuckDB con storico dei listoni e statistiche API-Football;
-- storico granulare per fixture con eventi, formazioni, statistiche squadra e giocatore;
-- snapshot immutabili pre-campionato e settembre;
-- baseline spiegabile e modello ML soggetto a validazione temporale;
-- prezzi consigliati che riconciliano esattamente i 10.000 crediti della lega;
-- `ranking.csv`, `ranking.parquet`, `diff.csv`, `manifest.json` e report HTML autonomo.
-
-I file Excel e i payload del provider sono dati privati e non vengono versionati.
-
-</details>
-
-<details>
-<summary><b>Setup completo: API-Football, backfill e cache</b></summary>
-
-### API-Football e backfill Pro
-
-La chiave non deve comparire in file o comandi versionati. In PowerShell 7 può essere
-impostata con input mascherato:
-
-```powershell
-$env:API_FOOTBALL_KEY = Read-Host "API-Football key" -MaskInput
-uv run fantabuddy provider-check
-```
-
-È supportato anche un file `.env` ignorato da Git con
-`API_FOOTBALL_KEY=...`. In alternativa, creare manualmente il file ignorato da Git
-`data/private/api-football.key` con la sola chiave su una riga. Il file non viene mai
-letto nei log né incluso negli artifact. Un percorso diverso può essere indicato tramite
-`API_FOOTBALL_KEY_FILE`.
-
-Il client:
-
-- interroga `status` prima di consumare quota;
-- usa una cache gzip deterministica per endpoint e parametri;
-- applica il rate limit del piano e lascia una riserva giornaliera configurabile;
-- interrompe con exit code 75 prima di intaccare la riserva;
-- può essere rilanciato il giorno seguente e riprende dalle pagine in cache.
-
-Acquisire le stagioni di Serie A e poi la carriera quinquennale multi-campionato,
-senza `--refresh`:
-
-```powershell
-uv run fantabuddy ingest-api --seasons "2022,2023"
-uv run fantabuddy ingest-api --seasons "2024,2025"
-uv run fantabuddy ingest-squads --season-start 2026
-uv run fantabuddy ingest-injuries --season-start 2026
-uv run fantabuddy ingest-fixtures --seasons "2021,2022,2023,2024,2025"
-uv run fantabuddy build-fixture-features
-uv run fantabuddy ingest-transfers --season-start 2026
-uv run fantabuddy ingest-sidelined --season-start 2026
-uv run fantabuddy ingest-player-teams
-uv run fantabuddy ingest-player-profiles
-uv run fantabuddy ingest-team-profiles
-uv run fantabuddy ingest-league-profiles
-uv run fantabuddy ingest-player-seasons
-uv run fantabuddy ingest-player-trophies
-uv run fantabuddy reconcile-all
-uv run fantabuddy reconcile --season "2026/27"
-uv run fantabuddy backfill-careers --target-season-start 2026 --history-start 2021 --history-end 2025 --cohort current
-uv run fantabuddy backfill-careers --target-season-start 2026 --history-start 2021 --history-end 2025 --cohort serie-a-five-year
-```
-
-Il backfill usa una richiesta per coppia giocatore-stagione e comprende tutte le
-competizioni disponibili, anche estere e Serie B. Le coppie complete o senza presenze
-sono marcate esplicitamente; una nuova esecuzione scarica soltanto il delta.
-`--refresh` ignora intenzionalmente la cache e va usato soltanto per aggiornare dati già
-acquisiti.
-
-Per trasformare il warehouse in un corpus personale riutilizzabile, i payload grezzi
-sono archiviati per checksum e non vengono sovrascritti dai refresh. Ogni record
-conserva anche una storage key relativa, così cache e warehouse possono essere spostati
-insieme e verificati su un'altra macchina. Chi aggiorna un warehouse creato prima di
-questa garanzia deve eseguire una volta `archive-raw-cache`; `verify-raw-cache` controlla
-poi presenza e checksum dell'intero archivio. I comandi
-`ingest-player-teams` e `ingest-player-profiles` completano la coorte storica Serie A
-con associazioni squadra-stagione e anagrafiche esatte per ID. Anche trasferimenti e
-indisponibilità possono essere estesi all'intera coorte, restando riprendibili dalla
-cache. `harvest-corpus` orchestra poi gli arricchimenti stabili ancora mancanti —
-competizioni e relative coverage, club e stadi, stagioni disponibili e palmarès — in
-quest'ordine, usando prima la cache e lasciando la riserva giornaliera richiesta:
-
-```powershell
-uv run fantabuddy ingest-transfers --season-start 2026 --cohort serie-a-history
-uv run fantabuddy ingest-sidelined --season-start 2026 --cohort serie-a-history
-uv run fantabuddy ingest-player-teams
-uv run fantabuddy ingest-player-profiles
-uv run fantabuddy harvest-corpus --daily-reserve 100 --workers 4
-uv run fantabuddy archive-raw-cache
-uv run fantabuddy verify-raw-cache
+uv run fantabuddy ingest-official-listones
 uv run fantabuddy corpus-status
-uv run fantabuddy export-corpus
 ```
 
-Il comando può terminare con exit code 75 quando raggiunge la riserva: non è perdita di
-dati, e un nuovo lancio dopo il reset UTC riprende dagli ID non ancora in cache. Un exit
-code 1 indica invece errori da esaminare. `corpus-status` non usa la rete né richiede una
-chiave e rende visibili conteggi e copertura anche a chi riceve una copia del corpus.
+Questo crea una base gratuita locale, senza chiave API. Per aggiungere statistiche,
+fixture, rose, trasferimenti e indisponibilità, prosegui con la
+[guida ai dati e al corpus](docs/data-and-corpus.md). Per arrivare al primo report parti
+dalla [guida introduttiva](docs/getting-started.md).
 
-Per spostare o conservare il corpus copiare insieme
-`data/warehouse/fantabuddy.duckdb` e `data/raw/api-football/`, mantenendo quella struttura
-relativa. Dopo il trasferimento eseguire:
+## Usalo con un coding agent
 
-```powershell
-uv run fantabuddy verify-raw-cache --cache-dir data/raw/api-football
-```
+Il repository è già preparato per Codex, Claude Code e Cursor. `AGENTS.md` contiene
+architettura, vincoli sui dati e quality gate; `CLAUDE.md` importa la stessa guida e
+Cursor legge direttamente il file root.
 
-Il controllo rilegge ogni payload compresso e ne confronta il checksum. Il database
-normalizzato resta interrogabile anche senza la cache, ma in quel caso non è possibile
-verificare o rielaborare la fonte grezza.
-
-`export-corpus` crea in `outputs/corpus/<timestamp>/` un file Parquet ordinato per ogni
-tabella persistente e un `manifest.json` con versione del formato, revisione del codice,
-schema, conteggi, dimensioni e checksum SHA-256. I percorsi assoluti locali vengono
-esclusi. Lo snapshot può essere controllato senza warehouse e senza chiave API:
-
-```powershell
-uv run fantabuddy verify-corpus-export outputs/corpus/<snapshot-id>
-```
-
-I Parquet contengono il corpus normalizzato; i payload sorgente restano separati nella
-cache raw e si collegano tramite `api_raw_responses.payload_storage_key`.
-
-Il backfill fixture scopre prima il calendario della competizione e richiede i dettagli
-in gruppi di massimo 20 ID. Se il provider non restituisce eventi, formazioni e
-statistiche nel payload aggregato, passa automaticamente agli endpoint specifici. Ogni
-partita viene marcata completa soltanto dopo una transazione riuscita; rilanciando lo
-stesso comando, le fixture complete sono saltate e le risposte parziali già in cache
-vengono riutilizzate. Per default sono elaborate soltanto le partite concluse (`FT`,
-`AET`, `PEN`). Usare `--include-unfinished` per includere il calendario corrente e
-`--refresh` solo quando si desidera sostituire snapshot già completi.
-Per coppe e competizioni UEFA, `--serie-a-team-scope` salva il calendario completo ma
-acquisisce i dettagli soltanto delle partite con almeno una squadra presente in Serie A
-nella stagione corrispondente.
-
-`build-fixture-features` materializza un dataset point-in-time con una riga per
-giocatore e partita. Le medie mobili su 3, 5 e 10 convocazioni, la forma di squadra e
-la forza recente dell'avversario terminano sempre alla partita precedente. Titolarità,
-minuti, rating e bonus della partita corrente sono salvati separatamente nelle colonne
-`label_*`, così un modello non usa accidentalmente informazioni future.
-La view `ml_serie_a_player_fixture_training` limita inoltre le label alla Serie A,
-pur mantenendo nelle finestre precedenti il carico accumulato in coppe e competizioni
-UEFA.
-
-Durante il build, due modelli point-in-time stimano per ogni giocatore la probabilità
-di partire titolare e i minuti attesi nella prossima partita. L'ultima stagione conclusa
-resta fuori dall'addestramento come validazione temporale: il modello di titolarità viene
-usato soltanto se migliora di almeno l'1% il Brier score della media mobile, e quello dei
-minuti soltanto se migliora di almeno l'1% il MAE. In caso contrario il report usa
-automaticamente le rispettive baseline. Le metriche `START` e `MIN`, la colonna `Tit.%`
-e i minuti stagionali derivati sono esposti nel report per rendere verificabile la scelta.
-
-Il report HTML è l'interfaccia operativa principale: riassume le prime scelte per ruolo,
-i titolari probabili a costo contenuto, gli alert di disponibilità ancora aperti, i
-trasferimenti recenti verificati contro il listone e le variazioni rispetto allo snapshot
-precedente. Il ranking completo resta filtrabile e ordinabile offline; una sezione finale
-dichiara copertura, gate dei modelli e freschezza di ogni fonte.
-
-Per un primo test limitato a una stagione:
-
-```powershell
-uv run fantabuddy ingest-fixtures --seasons "2021" --daily-reserve 100 --pause-ok
-```
-
-</details>
-
-<details>
-<summary><b>Tutti i comandi</b></summary>
-
-### Comandi
+Apri il progetto nel tuo agente e usa questo primo prompt:
 
 ```text
-fantabuddy import-listoni <file-o-cartella>...
-fantabuddy validate [--season 2026/27]
-fantabuddy archive-raw-cache
-fantabuddy verify-raw-cache
-fantabuddy provider-check
-fantabuddy ingest-api --seasons 2022,2023
-fantabuddy ingest-squads --season-start 2026
-fantabuddy ingest-injuries --season-start 2026
-fantabuddy ingest-fixtures --seasons 2021,2022 [--league-id 135]
-fantabuddy build-fixture-features
-fantabuddy ingest-transfers --season-start 2026
-fantabuddy ingest-sidelined --season-start 2026
-fantabuddy ingest-player-teams
-fantabuddy ingest-player-profiles
-fantabuddy ingest-team-profiles
-fantabuddy ingest-league-profiles
-fantabuddy ingest-player-seasons
-fantabuddy ingest-player-trophies
-fantabuddy harvest-corpus
-fantabuddy corpus-status
-fantabuddy export-corpus [--snapshot-id nome]
-fantabuddy verify-corpus-export <directory-snapshot>
-fantabuddy backfill-careers --target-season-start 2026 --history-start 2021 --history-end 2025
-fantabuddy search-mapping-gaps --season 2026/27
-fantabuddy reconcile --season 2026/27 [--mapping-csv mapping.csv]
-fantabuddy reconcile-all
-fantabuddy import-overrides config/overrides.csv
-fantabuddy build --season 2026/27 --as-of 2026-08-05 --kind preseason [--config profilo.yaml]
-fantabuddy run --listoni-dir <cartella> --season 2026/27 --as-of <data> [--config profilo.yaml]
+Read AGENTS.md and README.md, then inspect git status and the relevant code/tests before
+acting. Objective: <describe the outcome>.
+
+Work autonomously through implementation and verification. Preserve unrelated local
+changes and private data. Keep ingestion cache-first, point-in-time safe and explicit
+about missing data. Update the appropriate docs when public behavior changes. Run focused
+tests while iterating and the repository quality gates before handing off. End with a
+short self-review: files changed, checks run, remaining data-quality limits, and anything
+that still needs my decision. Do not commit, push, tag or publish unless I explicitly ask.
 ```
 
-Un abbinamento basato sulla sola somiglianza tra stringhe non viene mai approvato
-automaticamente: resta `pending` finché non lo si decide a mano. Sono accettate in
-automatico soltanto le corrispondenze con confidenza almeno 0.94 e margine di almeno
-0.03 sul secondo candidato: identità storica già accettata, abbreviazioni del listone e
-cognome più iniziale nella stessa squadra. Il comando `reconcile` esporta i candidati
-in `outputs/mapping-pending.csv`; un mapping manuale usa le colonne
-`fantacalcio_id,api_player_id,season,status,note`; `status` può essere `accepted`
-oppure `excluded`. Il build è bloccato finché ogni calciatore attivo non ha una
-decisione esplicita.
+Dettagli e prompt di esempio: [workflow agentico](docs/agentic-workflow.md).
 
-Titolarità, rigoristi, piazzati e rischi editoriali possono essere inseriti senza scraping
-copiando `config/overrides.example.csv`. Ogni riga deve indicare fonte, autore e periodo
-di validità; gli override attivi sono dichiarati nel report.
+## Principi
 
-</details>
+- **Local-first.** Warehouse, cache e report restano sulla tua macchina.
+- **Missing means missing.** Un valore assente non viene inventato per riempire una cella.
+- **Point-in-time.** Il futuro non entra nelle feature del passato.
+- **Baseline prima dell'ego.** Un modello entra nel report solo se batte una baseline
+  temporale.
+- **Graceful degradation.** I listoni ufficiali costruiscono una base gratuita; l'API
+  aggiunge profondità quando disponibile.
+- **Provenance verificabile.** URL, timestamp, raw payload e checksum accompagnano il dato.
 
-<details>
-<summary><b>L'aggiornamento di settembre</b></summary>
+## Limiti onesti
 
-### Aggiornamento di settembre
+Il rating API non è il voto ufficiale Fantacalcio. Gli infortuni sono segnali da
+verificare, non cartelle cliniche. FVM e quotazioni sono riferimenti di mercato, non il
+prezzo giusto per ogni lega. I match ambigui tra provider restano in revisione invece di
+essere accettati automaticamente.
 
-Scaricare il nuovo listone nella cartella degli input e rilanciare:
+La metodologia completa è in [Methodology and limits](docs/methodology.md).
 
-```powershell
-uv run fantabuddy run `
-  --listoni-dir "$env:USERPROFILE\Downloads" `
-  --season "2026/27" `
-  --as-of "2026-09-15" `
-  --kind september
-```
+## Mappa della documentazione
 
-Il checksum distingue la nuova versione e `diff.csv` riporta entrate, uscite e variazioni.
+- [Getting started](docs/getting-started.md) — installazione, listoni, configurazione e
+  primo report.
+- [Data and corpus](docs/data-and-corpus.md) — API, quota, raw archive, backup ed export.
+- [Methodology and limits](docs/methodology.md) — mapping, validazione e prezzi.
+- [CLI reference](docs/cli-reference.md) — comandi raggruppati per workflow.
+- [Agentic workflow](docs/agentic-workflow.md) — Codex, Claude Code e Cursor.
+- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) ·
+  [Code of Conduct](CODE_OF_CONDUCT.md)
 
-Per un refresh completo subito dopo la chiusura del mercato, scaricare prima il nuovo
-listone ufficiale e poi aggiornare le fonti nell'ordine seguente (sostituire data e
-stagione quando necessario):
+## La storia del progetto
 
-```powershell
-uv run fantabuddy import-listoni `
-  "$env:USERPROFILE\Downloads\Quotazioni_Fantacalcio_Stagione_2026_27.xlsx"
-uv run fantabuddy ingest-squads --season-start 2026 --refresh
-uv run fantabuddy ingest-transfers --season-start 2026 --refresh
-uv run fantabuddy ingest-sidelined --season-start 2026 --refresh
-uv run fantabuddy ingest-injuries --season-start 2026 --refresh
-uv run fantabuddy ingest-fixtures --seasons "2026" --refresh --pause-ok
-uv run fantabuddy ingest-api --seasons "2026" --refresh --pause-ok
-uv run fantabuddy build-fixture-features
-uv run fantabuddy reconcile --season "2026/27" --mapping-csv config/mappings.manual.csv
-uv run fantabuddy search-mapping-gaps --season "2026/27"
-uv run fantabuddy reconcile --season "2026/27"
-uv run fantabuddy validate --season "2026/27"
-uv run fantabuddy build --season "2026/27" --as-of "2026-08-31" --kind preseason
-```
+Fantabuddy è nato per una lega reale e continua a crescere soprattutto nel dato, non
+nella superficie dell'app. Se vuoi il racconto completo:
 
-Se `reconcile` esporta righe in `outputs/mapping-pending.csv`, verificarle e aggiungere
-le sole decisioni confermate a `config/mappings.manual.csv`: il build resta
-intenzionalmente bloccato finché ogni calciatore attivo non ha una decisione esplicita.
+- [Ho costruito un modello per il Fantacalcio](https://andreabozzo.github.io/AndreaBozzo/blog/posts/fantabuddy-blog/)
+- [English version](https://andreabozzo.github.io/AndreaBozzo/blog/en/posts/fantabuddy-blog/)
 
-</details>
-
-<details>
-<summary><b>Esecuzione su GitHub Actions</b></summary>
-
-### GitHub Actions
-
-1. Creare una release privata contenente i cinque XLSX.
-2. Salvare la chiave come secret `API_FOOTBALL_KEY`.
-3. Avviare manualmente il workflow **Snapshot Fantabuddy** indicando tag della release,
-   stagione, data e tipo snapshot.
-
-Il workflow **Backfill carriere API** può essere avviato manualmente ed è schedulato
-ogni giorno. Richiede che il workflow Snapshot abbia già popolato la cache del warehouse;
-quando la coorte è completa non consuma chiamate aggiuntive.
-
-</details>
-
-## Sviluppo
-
-```powershell
-uv run ruff check .
-uv run mypy src
-uv run pytest --cov=fantabuddy
-```
-
-Il notebook `notebooks/auction_report.ipynb` è un ingresso parametrico alternativo per
-rigenerare l'HTML di una build già presente nel warehouse.
-
-## Community
-
-Domande, racconti d'asta e idee ancora aperte stanno nelle
-[GitHub Discussions](https://github.com/AndreaBozzo/fantabuddy/discussions). Per bug
-riproducibili e proposte già definite usa i template delle
-[issue](https://github.com/AndreaBozzo/fantabuddy/issues/new/choose); per contribuire
-parti da [CONTRIBUTING.md](CONTRIBUTING.md). Le vulnerabilità vanno segnalate in privato
-seguendo [SECURITY.md](SECURITY.md).
+Domande e idee sono benvenute nelle
+[GitHub Discussions](https://github.com/AndreaBozzo/fantabuddy/discussions); bug e
+proposte definite nelle [issue](https://github.com/AndreaBozzo/fantabuddy/issues/new/choose).

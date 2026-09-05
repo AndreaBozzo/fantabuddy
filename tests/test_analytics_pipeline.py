@@ -5,7 +5,7 @@ from pathlib import Path
 
 from conftest import write_listone
 
-from fantabuddy.analytics import allocate_prices, persist_build, train_and_project
+from fantabuddy.analytics import Projection, allocate_prices, persist_build, train_and_project
 from fantabuddy.config import LeagueConfig
 from fantabuddy.db import database, ingest_listone
 from fantabuddy.excel import read_listone
@@ -14,7 +14,7 @@ from fantabuddy.report import _availability_category, build_diff, export_build
 
 def _records(season_index: int) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
-    role_counts = {"P": 5, "D": 8, "C": 8, "A": 6}
+    role_counts = {"P": 5, "D": 16, "C": 16, "A": 16}
     player_id = 1
     for role, count in role_counts.items():
         for rank in range(count):
@@ -28,6 +28,15 @@ def _records(season_index: int) -> list[dict[str, object]]:
                     "quote_initial": max(1, quote - 2),
                     "quote_current": quote,
                     "fvm": quote * 5 + season_index,
+                    "mantra_roles": {
+                        "P": "Por",
+                        "D": "Dd;Dc",
+                        "C": "M;C",
+                        "A": "A;Pc",
+                    }[role],
+                    "mantra_quote_current": quote + 3,
+                    "mantra_quote_initial": max(1, quote + 1),
+                    "fvm_mantra": quote * 6 + season_index,
                 }
             )
             player_id += 1
@@ -60,6 +69,33 @@ def test_end_to_end_build_includes_newcomers_and_reconciles_budget(tmp_path: Pat
         projections, metrics = train_and_project(connection, "2026/27")
         assert len(projections) == len(_records(4))
         assert any(projection.name == "Nuovo 4" for projection in projections)
+
+        mantra_projections, _ = train_and_project(connection, "2026/27", system="mantra")
+        mantra_goalkeeper = next(
+            projection for projection in mantra_projections if projection.fantacalcio_id == 1
+        )
+        assert mantra_goalkeeper.role == "POR"
+        assert mantra_goalkeeper.official_quote == _records(4)[0]["mantra_quote_current"]
+        assert mantra_goalkeeper.official_fvm == _records(4)[0]["fvm_mantra"]
+        mantra_config = LeagueConfig(
+            name="Mantra test",
+            system="mantra",
+            teams=2,
+            budget=100,
+            mantra={"roster_size": 23, "goalkeepers": 2},
+        )
+        allocate_prices(mantra_projections, mantra_config)
+        mantra_id = persist_build(
+            connection,
+            season="2026/27",
+            as_of=date(2026, 8, 5),
+            snapshot_kind="preseason",
+            config=mantra_config,
+            projections=mantra_projections,
+            metrics=metrics,
+            code_version="test-mantra",
+        )
+        mantra_result = export_build(connection, mantra_id, tmp_path / "outputs")
 
         config = LeagueConfig(
             teams=2,
@@ -172,6 +208,12 @@ def test_end_to_end_build_includes_newcomers_and_reconciles_budget(tmp_path: Pat
     assert "S · top 10%" in report
     assert "panchina non specificata" in report
     assert ">None<" not in report
+    mantra_report = Path(mantra_result["output_dir"]) / "report.html"
+    mantra_html = mantra_report.read_text(encoding="utf-8")
+    assert "Profilo di lega · Mantra" in mantra_html
+    assert "slot liberi: 2 POR · 21 movimento" in mantra_html
+    assert "<option>PC</option>" in mantra_html
+    assert "M;C" in mantra_html
     september_output = Path(september_result["output_dir"])
     diff = (september_output / "diff.csv").read_text(encoding="utf-8")
     assert "Nuovo settembre" in diff
@@ -188,3 +230,55 @@ def test_availability_categories_separate_non_injury_signals() -> None:
     assert _availability_category("Red Card") == "Squalifica"
     assert _availability_category("Transfer negotiations") == "Mercato"
     assert _availability_category("Coach's decision") == "Scelta tecnica"
+
+
+def test_mantra_allocation_uses_goalkeeper_and_movement_pools() -> None:
+    projections = [
+        Projection(
+            fantacalcio_id=index,
+            name=f"Portiere {index}",
+            team="Test",
+            role="POR",
+            status="active",
+            official_quote=10,
+            official_fvm=50,
+            baseline_score=float(100 - index),
+            ml_score=None,
+            projected_score=float(100 - index),
+        )
+        for index in range(1, 7)
+    ]
+    projections.extend(
+        Projection(
+            fantacalcio_id=index,
+            name=f"Movimento {index}",
+            team="Test",
+            role="M;C" if index % 2 else "W;A",
+            status="active",
+            official_quote=10,
+            official_fvm=50,
+            baseline_score=float(100 - index),
+            ml_score=None,
+            projected_score=float(100 - index),
+        )
+        for index in range(7, 55)
+    )
+    config = LeagueConfig(
+        system="mantra",
+        teams=2,
+        budget=300,
+        mantra={
+            "roster_size": 23,
+            "goalkeepers": 2,
+            "goalkeeper_budget_share": 0.1,
+            "goalkeeper_price_cap": 60,
+            "movement_price_cap": 100,
+        },
+    )
+
+    allocate_prices(projections, config)
+
+    rosterable = [projection for projection in projections if projection.rosterable]
+    assert len(rosterable) == 46
+    assert sum(projection.role == "POR" for projection in rosterable) == 4
+    assert sum(projection.suggested_credits for projection in rosterable) == 600

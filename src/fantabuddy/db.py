@@ -20,8 +20,11 @@ CREATE TABLE IF NOT EXISTS listone_snapshots (
     imported_at TIMESTAMPTZ NOT NULL,
     record_count INTEGER NOT NULL,
     active_count INTEGER NOT NULL,
-    ceduti_count INTEGER NOT NULL
+    ceduti_count INTEGER NOT NULL,
+    source_url VARCHAR
 );
+
+ALTER TABLE listone_snapshots ADD COLUMN IF NOT EXISTS source_url VARCHAR;
 
 CREATE TABLE IF NOT EXISTS listone_players (
     snapshot_id VARCHAR NOT NULL,
@@ -42,8 +45,13 @@ CREATE TABLE IF NOT EXISTS listone_players (
     status VARCHAR NOT NULL,
     source_sheet VARCHAR NOT NULL,
     source_row INTEGER NOT NULL,
+    fvm_available BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (snapshot_id, fantacalcio_id)
 );
+
+ALTER TABLE listone_players
+  ADD COLUMN IF NOT EXISTS fvm_available BOOLEAN DEFAULT TRUE;
+ALTER TABLE listone_players ALTER COLUMN fvm_available SET NOT NULL;
 
 CREATE TABLE IF NOT EXISTS api_raw_responses (
     response_id VARCHAR PRIMARY KEY,
@@ -570,7 +578,11 @@ def ingest_listone(connection: duckdb.DuckDBPyConnection, data: ListoneImport) -
     try:
         connection.execute(
             """
-            INSERT INTO listone_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO listone_snapshots (
+              snapshot_id, season, source_filename, source_path, checksum,
+              source_modified_at, imported_at, record_count, active_count,
+              ceduti_count, source_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 data.snapshot_id,
@@ -583,6 +595,7 @@ def ingest_listone(connection: duckdb.DuckDBPyConnection, data: ListoneImport) -
                 len(data.records),
                 data.active_count,
                 data.ceduti_count,
+                data.source_url,
             ],
         )
         rows = [
@@ -605,11 +618,22 @@ def ingest_listone(connection: duckdb.DuckDBPyConnection, data: ListoneImport) -
                 record.status,
                 record.source_sheet,
                 record.source_row,
+                record.fvm_available,
             )
             for record in data.records
         ]
-        placeholders = ", ".join(["?"] * 18)
-        connection.executemany(f"INSERT INTO listone_players VALUES ({placeholders})", rows)
+        placeholders = ", ".join(["?"] * 19)
+        connection.executemany(
+            f"""
+            INSERT INTO listone_players (
+              snapshot_id, season, fantacalcio_id, classic_role, mantra_roles,
+              name, team, quote_current, quote_initial, quote_diff,
+              mantra_quote_current, mantra_quote_initial, mantra_quote_diff,
+              fvm, fvm_mantra, status, source_sheet, source_row, fvm_available
+            ) VALUES ({placeholders})
+            """,
+            rows,
+        )
         connection.execute("COMMIT")
     except Exception:
         connection.execute("ROLLBACK")

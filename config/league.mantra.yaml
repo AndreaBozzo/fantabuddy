@@ -1,0 +1,47 @@
+league:
+  name: "Mantra 10 - 1000"
+  system: mantra
+  teams: 10
+  budget: 1000
+
+  # Mantra non impone una gabbia per i ruoli di movimento. Fantabuddy modella
+  # quindi due pool d'asta: portieri e movimento, conservando tutti i ruoli
+  # multipli ufficiali nel ranking.
+  mantra:
+    roster_size: 28
+    goalkeepers: 3
+    goalkeeper_budget_share: 0.08
+    goalkeeper_price_cap: 90
+    movement_price_cap: 500
+
+  scoring:
+    goal: 3.0
+    assist: 1.0
+    yellow_card: -0.5
+    red_card: -1.0
+    own_goal: -2.0
+    penalty_missed: -3.0
+    penalty_saved: 3.0
+    goal_conceded: -1.0
+    clean_sheet: 0.0
+
+  goal_bands:
+    first_goal: 66
+    step: 4
+  auction:
+    min_bid: 1
+    random_by_role: true
+    repair_release_slots: null
+    voluntary_release_refund_share: null
+    transferred_player_full_refund: null
+    long_injury_replacement: null
+  lineup:
+    captain: null
+    max_bench_players: null
+    substitutions: 5
+
+  rules_source: "Profilo Mantra generico: personalizzare secondo il regolamento della lega"
+  strategy_notes:
+    - "Il pool atteso stima la profondità complessiva dell'asta, non garantisce la copertura di un modulo per ogni rosa."
+    - "I multiruolo compaiono in ogni filtro eleggibile ma ricevono un solo prezzo."
+  price_curve_gamma: 1.15

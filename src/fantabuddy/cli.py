@@ -20,6 +20,12 @@ from fantabuddy.db import corpus_inventory, database, ingest_listone, listone_su
 from fantabuddy.excel import read_listone
 from fantabuddy.features import materialize_player_fixture_features
 from fantabuddy.mapping import export_pending_mappings, import_mapping_csv, reconcile_season
+from fantabuddy.official import (
+    OFFICIAL_ARCHIVE_END,
+    OFFICIAL_ARCHIVE_START,
+    download_official_listone,
+    read_official_listone,
+)
 from fantabuddy.provider import (
     SERIE_A_LEAGUE_ID,
     ApiFootballClient,
@@ -108,6 +114,48 @@ def import_listoni(
                 f"{data.ceduti_count} ceduti ({path.name})"
             )
         typer.echo(json.dumps(listone_summary(connection), default=str, indent=2))
+
+
+@app.command("ingest-official-listones")
+def ingest_official_listones(
+    history_start: Annotated[
+        int, typer.Option("--history-start", min=OFFICIAL_ARCHIVE_START)
+    ] = OFFICIAL_ARCHIVE_START,
+    history_end: Annotated[
+        int, typer.Option("--history-end", max=OFFICIAL_ARCHIVE_END)
+    ] = OFFICIAL_ARCHIVE_END,
+    output_dir: Annotated[Path, typer.Option("--output-dir")] = Path(
+        "data/raw/fantacalcio"
+    ),
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    refresh: Annotated[bool, typer.Option("--refresh")] = False,
+) -> None:
+    """Scarica e importa i listoni ufficiali dal floor scelto alla stagione corrente."""
+    if history_start > history_end:
+        raise typer.BadParameter("history-start deve essere <= history-end")
+    with database(db_path) as connection:
+        for start_year in range(history_start, history_end + 1):
+            path, cached = download_official_listone(
+                start_year, output_dir, refresh=refresh
+            )
+            data = read_official_listone(path, start_year)
+            inserted = ingest_listone(connection, data)
+            typer.echo(
+                json.dumps(
+                    {
+                        "season": data.season,
+                        "download": "cache" if cached else "network",
+                        "ingestion": "already_present" if not inserted else "imported",
+                        "records": len(data.records),
+                        "active": data.active_count,
+                        "ceduti": data.ceduti_count,
+                        "fvm_available": sum(record.fvm_available for record in data.records),
+                        "source_url": data.source_url,
+                        "sha256": data.checksum,
+                    },
+                    ensure_ascii=False,
+                )
+            )
 
 
 @app.command("provider-check")
@@ -957,6 +1005,7 @@ def build(
             as_of=as_of_date,
             scoring=config.scoring,
             use_official_fvm_anchor=snapshot_kind != "benchmark",
+            system=config.system,
         )
         allocate_prices(projections, config)
         build_id = persist_build(

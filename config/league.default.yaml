@@ -1,5 +1,6 @@
 league:
   name: "Classic 10 - 1000"
+  system: classic
   teams: 10
   budget: 1000
   roster:
