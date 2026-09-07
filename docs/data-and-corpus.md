@@ -92,6 +92,12 @@ key or provider requests. An extracted snapshot directory containing `manifest.j
 and the Parquet files works too. ZIPs may contain those files directly or inside one
 enclosing directory.
 
+Both input forms are copied into private temporary storage before verification and
+loading, so later changes to the downloaded directory cannot change the imported rows.
+Staging is limited to 10 GiB total, 4 GiB per Parquet file and 16 MiB for the manifest;
+the total budget also leaves 64 MiB free on the temporary filesystem. ZIP sizes are
+checked before extraction, and byte limits are enforced during copying for both forms.
+
 The destination must not exist, even as an empty file. To keep an existing warehouse,
 choose a separate destination and pass it to subsequent commands:
 
@@ -113,6 +119,9 @@ storage keys and timestamps, but are marked unavailable locally with an explanat
 archive note. Ingestion history is retained. Import does not recreate the acquisition
 cache; subsequent provider commands can require an API key and consume quota. Use the
 separate raw archive backup above when you need the original payloads as well.
+Missing-payload checks preserve existing archive notes. Restoring raw files through
+their storage keys requires paths contained within the configured cache directory;
+absolute paths, traversal and symlinks escaping that directory are rejected.
 
 For analysis outside Fantabuddy, extract the ZIP and query individual Parquet files
 directly with DuckDB; importing a warehouse is optional:

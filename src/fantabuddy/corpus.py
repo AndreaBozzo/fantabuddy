@@ -11,6 +11,7 @@ import uuid
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import IO
 
 import duckdb
 
@@ -54,11 +55,72 @@ _PORTABLE_SELECTS = {
     "api_raw_responses": "SELECT * EXCLUDE (payload_path) FROM api_raw_responses",
 }
 _SNAPSHOT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_MAX_IMPORT_BYTES = 10 * 1024**3
+_MAX_ENTRY_BYTES = 4 * 1024**3
+_MAX_MANIFEST_BYTES = 16 * 1024**2
+_IMPORT_DISK_RESERVE = 64 * 1024**2
+
+
+def _import_budget(destination: Path) -> int:
+    budget = min(_MAX_IMPORT_BYTES, shutil.disk_usage(destination).free - _IMPORT_DISK_RESERVE)
+    if budget <= 0:
+        raise ValueError("spazio temporaneo insufficiente per importare il corpus")
+    return budget
+
+
+def _copy_bounded(reader: IO[bytes], writer: IO[bytes], limit: int) -> int:
+    copied = 0
+    while chunk := reader.read(min(1024**2, limit - copied + 1)):
+        copied += len(chunk)
+        if copied > limit:
+            raise ValueError("limite dimensione import superato")
+        writer.write(chunk)
+    return copied
+
+
+def _stage_corpus_directory(source: Path, destination: Path) -> Path:
+    """Verify and load only private copies, never the caller's mutable directory."""
+    remaining = _import_budget(destination)
+    with (source / "manifest.json").open("rb") as reader:
+        with (destination / "manifest.json").open("xb") as writer:
+            remaining -= _copy_bounded(reader, writer, min(remaining, _MAX_MANIFEST_BYTES))
+    manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("tables"), dict):
+        raise ValueError("manifest non riconosciuto")
+    if set(manifest["tables"]) != set(CORPUS_TABLES):
+        raise ValueError("indice tabelle del manifest incompleto o inatteso")
+    files: list[Path] = []
+    seen = {"manifest.json"}
+    for entry in manifest["tables"].values():
+        name = entry.get("file") if isinstance(entry, dict) else None
+        if (
+            not isinstance(name, str)
+            or not name
+            or name in {".", ".."}
+            or any(char in name for char in "/\\:")
+            or name in seen
+        ):
+            raise ValueError("path non sicuro o duplicato nel manifest")
+        seen.add(name)
+        file = source / name
+        if file.is_symlink() or file.resolve().parent != source or not file.is_file():
+            raise ValueError(f"file snapshot mancante o non sicuro: {name}")
+        if file.stat().st_size > _MAX_ENTRY_BYTES:
+            raise ValueError("limite dimensione import superato")
+        files.append(file)
+    if sum(file.stat().st_size for file in files) > remaining:
+        raise ValueError("limite dimensione import superato")
+    for file in files:
+        with file.open("rb") as reader:
+            with (destination / file.name).open("xb") as writer:
+                remaining -= _copy_bounded(reader, writer, min(remaining, _MAX_ENTRY_BYTES))
+    return destination
 
 
 def _extract_corpus_zip(source: Path, destination: Path) -> Path:
     """Accept only a flat snapshot, optionally inside one enclosing directory."""
     allowed = {"manifest.json", *(f"{name}.parquet" for name in CORPUS_TABLES)}
+    remaining = _import_budget(destination)
     with zipfile.ZipFile(source) as archive:
         files = [info for info in archive.infolist() if not info.is_dir()]
         seen: set[str] = set()
@@ -84,9 +146,19 @@ def _extract_corpus_zip(source: Path, destination: Path) -> Path:
         if seen != allowed or len(roots) != 1:
             raise ValueError("lo ZIP deve contenere un solo snapshot completo")
         for info in files:
+            limit = (
+                _MAX_MANIFEST_BYTES
+                if info.filename.endswith("/manifest.json") or info.filename == "manifest.json"
+                else _MAX_ENTRY_BYTES
+            )
+            if info.file_size > limit:
+                raise ValueError("limite dimensione import superato")
+        if sum(info.file_size for info in files) > remaining:
+            raise ValueError("limite dimensione import superato")
+        for info in files:
             with archive.open(info) as reader:
                 with (destination / info.filename.split("/")[-1]).open("xb") as writer:
-                    shutil.copyfileobj(reader, writer)
+                    remaining -= _copy_bounded(reader, writer, min(remaining, info.file_size))
     return destination
 
 
@@ -99,7 +171,8 @@ def import_corpus_snapshot(source: Path, db_path: Path) -> dict[str, object]:
     if os.path.lexists(target):
         raise FileExistsError(f"warehouse già esistente: {target}")
     with tempfile.TemporaryDirectory(prefix="fantabuddy-import-") as extraction:
-        root = source if source.is_dir() else _extract_corpus_zip(source, Path(extraction))
+        stage = _stage_corpus_directory if source.is_dir() else _extract_corpus_zip
+        root = stage(source, Path(extraction))
         verified = verify_corpus_snapshot(root)
         if not verified["ok"]:
             raise ValueError(f"snapshot non valido: {json.dumps(verified)}")

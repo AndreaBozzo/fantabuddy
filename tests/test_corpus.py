@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import stat
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import duckdb
 import pytest
 from typer.testing import CliRunner
 
+from fantabuddy import corpus
 from fantabuddy.cli import app
 from fantabuddy.corpus import (
     CORPUS_TABLES,
@@ -162,6 +165,9 @@ def test_import_corpus_cli_restores_portable_snapshot(
         )
         assert verify_recorded_raw_responses(connection)["declared_unavailable"] == 1
         assert archive_recorded_raw_responses(connection)["unavailable"] == 1
+        assert connection.execute("SELECT archive_note FROM api_raw_responses").fetchone() == (
+            "original note; raw payload not included in imported corpus",
+        )
         # The restored database retains application constraints, not just Parquet types.
         with pytest.raises(duckdb.ConstraintException):
             connection.execute("INSERT INTO api_player_profiles SELECT * FROM api_player_profiles")
@@ -322,3 +328,79 @@ def test_existing_warehouse_migrates_missing_source_paths(tmp_path: Path) -> Non
                 "WHERE table_name = ? AND column_name = ?",
                 [table, column],
             ).fetchone() == ("YES",)
+
+
+def test_directory_import_loads_the_verified_private_copy(
+    tmp_path: Path, import_snapshot: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verify = corpus.verify_corpus_snapshot
+
+    def verify_then_change_source(root: Path) -> dict[str, object]:
+        result = verify(root)
+        assert root != import_snapshot
+        _rewrite_profile_snapshot(
+            import_snapshot, "SELECT * REPLACE ('Changed Player' AS player_name) FROM profiles"
+        )
+        return result
+
+    monkeypatch.setattr(corpus, "verify_corpus_snapshot", verify_then_change_source)
+    target = tmp_path / "private-copy.duckdb"
+    import_corpus_snapshot(import_snapshot, target)
+    with database(target, read_only=True) as connection:
+        assert connection.execute("SELECT player_name FROM api_player_profiles").fetchone() == (
+            "Test Player",
+        )
+
+
+@pytest.mark.parametrize("limit", ["entry", "total", "disk", "manifest"])
+def test_zip_import_checks_size_budget_before_extracting(
+    tmp_path: Path, import_snapshot: Path, monkeypatch: pytest.MonkeyPatch, limit: str
+) -> None:
+    archive_path = tmp_path / "seed.zip"
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for file in import_snapshot.iterdir():
+            archive.write(file, file.name)
+    if limit == "disk":
+        monkeypatch.setattr(corpus.shutil, "disk_usage", lambda _: SimpleNamespace(free=1))
+    else:
+        constant = {
+            "entry": "_MAX_ENTRY_BYTES",
+            "total": "_MAX_IMPORT_BYTES",
+            "manifest": "_MAX_MANIFEST_BYTES",
+        }[limit]
+        monkeypatch.setattr(corpus, constant, 1)
+    extraction = tmp_path / "extraction"
+    extraction.mkdir()
+    with pytest.raises(ValueError):
+        corpus._extract_corpus_zip(archive_path, extraction)
+    assert not list(extraction.iterdir())
+
+
+def test_zip_streaming_rejects_more_bytes_than_declared(
+    tmp_path: Path, import_snapshot: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_path = tmp_path / "seed.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        for file in import_snapshot.iterdir():
+            archive.write(file, file.name)
+    original_open = zipfile.ZipFile.open
+
+    def oversized_open(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> io.BytesIO:
+        with original_open(archive, info) as reader:
+            return io.BytesIO(reader.read() + b"extra bytes")
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", oversized_open)
+    target = tmp_path / "oversized.duckdb"
+    with pytest.raises(ValueError, match="limite dimensione"):
+        import_corpus_snapshot(archive_path, target)
+    assert not target.exists()
+
+
+def test_directory_staging_enforces_size_limit(
+    tmp_path: Path, import_snapshot: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(corpus, "_MAX_ENTRY_BYTES", 1)
+    target = tmp_path / "oversized.duckdb"
+    with pytest.raises(ValueError, match="limite dimensione"):
+        import_corpus_snapshot(import_snapshot, target)
+    assert not target.exists()

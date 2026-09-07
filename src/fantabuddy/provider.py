@@ -261,7 +261,7 @@ def archive_recorded_raw_responses(
                 """
                 UPDATE api_raw_responses
                 SET payload_available = FALSE,
-                    archive_note = 'payload legacy mancante o illeggibile'
+                    archive_note = coalesce(archive_note, 'payload legacy mancante o illeggibile')
                 WHERE response_id = ?
                 """,
                 [response_id],
@@ -328,13 +328,24 @@ def _resolve_raw_payload_path(
     cache_dir: Path | None,
 ) -> Path | None:
     if stored_path is None:
-        if cache_dir is not None and storage_key:
-            return cache_dir.expanduser().resolve() / Path(str(storage_key))
-        return None
+        return _resolve_raw_storage_key(storage_key, cache_dir)
     path = Path(str(stored_path))
     if path.is_file() or cache_dir is None or not storage_key:
         return path
-    return cache_dir.expanduser().resolve() / Path(str(storage_key))
+    return _resolve_raw_storage_key(storage_key, cache_dir)
+
+
+def _resolve_raw_storage_key(storage_key: object, cache_dir: Path | None) -> Path | None:
+    if cache_dir is None or not isinstance(storage_key, str) or not storage_key:
+        return None
+    parts = storage_key.replace("\\", "/").split("/")
+    if ":" in storage_key or any(part in {"", ".", ".."} for part in parts):
+        return None
+    root = cache_dir.expanduser().resolve()
+    candidate = (root / Path(*parts)).resolve()
+    if not candidate.is_relative_to(root):
+        return None
+    return candidate
 
 
 def verify_recorded_raw_responses(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
 from datetime import date
 from pathlib import Path
@@ -11,6 +13,7 @@ from fantabuddy.db import database
 from fantabuddy.provider import (
     ApiFootballClient,
     DailyQuotaGuard,
+    _resolve_raw_payload_path,
     archive_recorded_raw_responses,
     ingest_fixture_history,
     ingest_injuries,
@@ -27,6 +30,71 @@ from fantabuddy.provider import (
     record_raw_response,
     verify_recorded_raw_responses,
 )
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "../outside.json.gz",
+        "/outside.json.gz",
+        "C:/outside.json.gz",
+        "C:outside.json.gz",
+        "..\\outside.json.gz",
+        "\\\\server\\payload.json.gz",
+    ],
+)
+def test_imported_raw_keys_cannot_escape_cache(tmp_path: Path, key: str) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    assert _resolve_raw_payload_path(None, key, cache) is None
+    assert _resolve_raw_payload_path("missing-legacy-file", key, cache) is None
+
+
+def test_imported_raw_key_rejects_symlink_escape(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    outside = tmp_path / "outside"
+    cache.mkdir()
+    outside.mkdir()
+    try:
+        (cache / "players").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks unavailable on this platform")
+    assert _resolve_raw_payload_path(None, "players/raw.json.gz", cache) is None
+
+
+@pytest.mark.parametrize("escape", [True, False])
+def test_archiving_imported_raw_payloads_respects_cache_and_preserves_missing_note(
+    tmp_path: Path, escape: bool
+) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    payload = '{"response":[]}'
+    raw = tmp_path / "outside.json.gz" if escape else cache / "players/raw.json.gz"
+    raw.parent.mkdir(exist_ok=True)
+    with gzip.open(raw, "wt", encoding="utf-8") as stream:
+        stream.write(payload)
+    key = "../outside.json.gz" if escape else "players/raw.json.gz"
+    with database(tmp_path / "imported.duckdb") as connection:
+        connection.execute(
+            """
+            INSERT INTO api_raw_responses
+                (response_id, endpoint, parameters_json, requested_at, payload_sha256,
+                 payload_path, payload_storage_key, archive_note)
+            VALUES ('imported', 'players', '{}', '2026-09-01', ?, NULL, ?, 'import provenance')
+        """,
+            [hashlib.sha256(payload.encode()).hexdigest(), key],
+        )
+        result = archive_recorded_raw_responses(connection, cache)
+        assert result["unavailable" if escape else "archived"] == 1
+        if escape:
+            assert connection.execute("SELECT archive_note FROM api_raw_responses").fetchone() == (
+                "import provenance",
+            )
+            connection.execute("UPDATE api_raw_responses SET payload_available = TRUE")
+            assert verify_recorded_raw_responses(connection, cache)["missing_or_unreadable"] == 1
+        else:
+            assert verify_recorded_raw_responses(connection, cache)["verified"] == 1
+    assert not (tmp_path / "_history").exists()
 
 
 def _status(current: int = 0, limit: int = 100) -> dict[str, object]:
