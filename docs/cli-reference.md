@@ -44,6 +44,7 @@ fantabuddy corpus-status
 fantabuddy archive-raw-cache
 fantabuddy verify-raw-cache
 fantabuddy export-corpus [--snapshot-id name]
+fantabuddy import-corpus <zip-or-snapshot-directory> [--db new-warehouse.duckdb]
 fantabuddy verify-corpus-export <snapshot-directory>
 ```
 

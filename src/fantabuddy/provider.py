@@ -252,6 +252,8 @@ def archive_recorded_raw_responses(
     for response_id, expected_sha, stored_path, storage_key in rows:
         source_path = _resolve_raw_payload_path(stored_path, storage_key, cache_dir)
         try:
+            if source_path is None:
+                raise FileNotFoundError("payload non incluso nel corpus importato")
             with gzip.open(source_path, "rt", encoding="utf-8") as stream:
                 body = json.load(stream)
         except (OSError, json.JSONDecodeError):
@@ -259,7 +261,7 @@ def archive_recorded_raw_responses(
                 """
                 UPDATE api_raw_responses
                 SET payload_available = FALSE,
-                    archive_note = 'payload legacy mancante o illeggibile'
+                    archive_note = coalesce(archive_note, 'payload legacy mancante o illeggibile')
                 WHERE response_id = ?
                 """,
                 [response_id],
@@ -324,11 +326,26 @@ def _resolve_raw_payload_path(
     stored_path: object,
     storage_key: object,
     cache_dir: Path | None,
-) -> Path:
+) -> Path | None:
+    if stored_path is None:
+        return _resolve_raw_storage_key(storage_key, cache_dir)
     path = Path(str(stored_path))
     if path.is_file() or cache_dir is None or not storage_key:
         return path
-    return cache_dir.expanduser().resolve() / Path(str(storage_key))
+    return _resolve_raw_storage_key(storage_key, cache_dir)
+
+
+def _resolve_raw_storage_key(storage_key: object, cache_dir: Path | None) -> Path | None:
+    if cache_dir is None or not isinstance(storage_key, str) or not storage_key:
+        return None
+    parts = storage_key.replace("\\", "/").split("/")
+    if ":" in storage_key or any(part in {"", ".", ".."} for part in parts):
+        return None
+    root = cache_dir.expanduser().resolve()
+    candidate = (root / Path(*parts)).resolve()
+    if not candidate.is_relative_to(root):
+        return None
+    return candidate
 
 
 def verify_recorded_raw_responses(
@@ -352,6 +369,8 @@ def verify_recorded_raw_responses(
             continue
         path = _resolve_raw_payload_path(stored_path, storage_key, cache_dir)
         try:
+            if path is None:
+                raise FileNotFoundError("payload non incluso nel corpus importato")
             with gzip.open(path, "rt", encoding="utf-8") as stream:
                 payload = _stable_json(json.load(stream))
         except (OSError, json.JSONDecodeError):

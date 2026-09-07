@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS listone_snapshots (
 );
 
 ALTER TABLE listone_snapshots ADD COLUMN IF NOT EXISTS source_url VARCHAR;
+ALTER TABLE listone_snapshots ALTER COLUMN source_path DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS listone_players (
     snapshot_id VARCHAR NOT NULL,
@@ -72,6 +73,7 @@ ALTER TABLE api_raw_responses
   ADD COLUMN IF NOT EXISTS payload_available BOOLEAN DEFAULT FALSE;
 ALTER TABLE api_raw_responses ADD COLUMN IF NOT EXISTS archive_note VARCHAR;
 ALTER TABLE api_raw_responses ADD COLUMN IF NOT EXISTS payload_storage_key VARCHAR;
+ALTER TABLE api_raw_responses ALTER COLUMN payload_path DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS api_player_season_stats (
     api_player_id INTEGER NOT NULL,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import zipfile
 from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
@@ -14,7 +15,11 @@ import typer
 from fantabuddy import __version__
 from fantabuddy.analytics import allocate_prices, metrics_as_dicts, persist_build, train_and_project
 from fantabuddy.config import load_league_config
-from fantabuddy.corpus import export_corpus_snapshot, verify_corpus_snapshot
+from fantabuddy.corpus import (
+    export_corpus_snapshot,
+    import_corpus_snapshot,
+    verify_corpus_snapshot,
+)
 from fantabuddy.curation import import_overrides_csv
 from fantabuddy.db import corpus_inventory, database, ingest_listone, listone_summary
 from fantabuddy.excel import read_listone
@@ -714,6 +719,19 @@ def verify_corpus_export(
     typer.echo(json.dumps(result, indent=2))
     if not result["ok"]:
         raise typer.Exit(1)
+
+
+@app.command("import-corpus")
+def import_corpus(
+    source: Annotated[Path, typer.Argument(help="ZIP o directory dello snapshot")],
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+) -> None:
+    """Verifica e importa un corpus in un nuovo warehouse, senza sovrascrivere dati."""
+    try:
+        result = import_corpus_snapshot(source, db_path)
+    except (OSError, ValueError, zipfile.BadZipFile, duckdb.Error) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(json.dumps(result, indent=2))
 
 
 @app.command("ingest-sidelined")

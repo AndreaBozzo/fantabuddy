@@ -64,6 +64,10 @@ uv run fantabuddy export-corpus --snapshot-id my-corpus
 uv run fantabuddy verify-corpus-export outputs/corpus/my-corpus
 ```
 
+Hai ricevuto un corpus condiviso? `uv run fantabuddy import-corpus corpus.zip` crea un
+nuovo warehouse locale verificato, senza chiave API. Il warehouse di destinazione non
+deve già esistere; [dettagli sull'import](docs/data-and-corpus.md#import-a-shared-corpus).
+
 ## Parti in due minuti
 
 Servono Python 3.12 e [uv](https://docs.astral.sh/uv/).
