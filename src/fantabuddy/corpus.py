@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
+import stat
+import tempfile
 import uuid
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
 
 from fantabuddy import __version__
+from fantabuddy.db import database
 
 CORPUS_FORMAT_VERSION = 1
 CORPUS_TABLES = (
@@ -48,6 +54,101 @@ _PORTABLE_SELECTS = {
     "api_raw_responses": "SELECT * EXCLUDE (payload_path) FROM api_raw_responses",
 }
 _SNAPSHOT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _extract_corpus_zip(source: Path, destination: Path) -> Path:
+    """Accept only a flat snapshot, optionally inside one enclosing directory."""
+    allowed = {"manifest.json", *(f"{name}.parquet" for name in CORPUS_TABLES)}
+    with zipfile.ZipFile(source) as archive:
+        files = [info for info in archive.infolist() if not info.is_dir()]
+        seen: set[str] = set()
+        roots: set[str] = set()
+        for info in archive.infolist():
+            if info.flag_bits & 1:
+                raise ValueError("ZIP cifrati non supportati")
+            parts = info.filename.rstrip("/").split("/")
+            if (
+                len(parts) > 2
+                or any(part in {"", ".", ".."} for part in parts)
+                or "\\" in info.filename
+                or ":" in info.filename
+                or stat.S_ISLNK(info.external_attr >> 16)
+            ):
+                raise ValueError(f"path ZIP non sicuro: {info.filename}")
+            if info.is_dir():
+                continue
+            if parts[-1] not in allowed or parts[-1] in seen:
+                raise ValueError(f"file ZIP inatteso o duplicato: {info.filename}")
+            seen.add(parts[-1])
+            roots.add("/".join(parts[:-1]))
+        if seen != allowed or len(roots) != 1:
+            raise ValueError("lo ZIP deve contenere un solo snapshot completo")
+        for info in files:
+            with archive.open(info) as reader:
+                with (destination / info.filename.split("/")[-1]).open("xb") as writer:
+                    shutil.copyfileobj(reader, writer)
+    return destination
+
+
+def import_corpus_snapshot(source: Path, db_path: Path) -> dict[str, object]:
+    """Verify and restore a portable snapshot into a new, atomically published database."""
+    source = source.expanduser().resolve()
+    # Do not resolve the final component: an existing symlink is also a collision.
+    expanded = db_path.expanduser().absolute()
+    target = expanded.parent.resolve() / expanded.name
+    if os.path.lexists(target):
+        raise FileExistsError(f"warehouse già esistente: {target}")
+    with tempfile.TemporaryDirectory(prefix="fantabuddy-import-") as extraction:
+        root = source if source.is_dir() else _extract_corpus_zip(source, Path(extraction))
+        verified = verify_corpus_snapshot(root)
+        if not verified["ok"]:
+            raise ValueError(f"snapshot non valido: {json.dumps(verified)}")
+        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+        snapshot_id = manifest.get("snapshot_id")
+        if not isinstance(snapshot_id, str) or not _SNAPSHOT_ID.fullmatch(snapshot_id):
+            raise ValueError("snapshot_id mancante o non valido")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".corpus-import-", dir=target.parent) as work:
+            staged = Path(work) / "warehouse.duckdb"
+            with database(staged) as connection:
+                connection.execute("BEGIN TRANSACTION")
+                for name in CORPUS_TABLES:
+                    connection.execute(f"{_portable_select(name)} LIMIT 0")
+                    expected = [
+                        {"name": str(column[0]), "type": str(column[1])}
+                        for column in connection.description
+                    ]
+                    metadata = manifest["tables"][name]
+                    if sorted(metadata["schema"], key=lambda column: column["name"]) != sorted(
+                        expected, key=lambda column: column["name"]
+                    ):
+                        raise ValueError(f"schema incompatibile con questa versione: {name}")
+                    projection = "*"
+                    if name == "api_raw_responses":
+                        projection = """* REPLACE (
+                            FALSE AS payload_available,
+                            concat_ws('; ', archive_note,
+                                'raw payload not included in imported corpus') AS archive_note
+                        )"""
+                    connection.execute(
+                        f"INSERT INTO {name} BY NAME SELECT {projection} FROM read_parquet(?)",
+                        [str(root / metadata["file"])],
+                    )
+                    row = connection.execute(f"SELECT count(*) FROM {name}").fetchone()
+                    if row is None or row[0] != metadata["rows"]:
+                        raise ValueError(f"conteggio importato non valido: {name}")
+                connection.execute("COMMIT")
+                connection.execute("CHECKPOINT")
+            # A hard link publishes the closed file atomically and never replaces an
+            # existing destination, including one created after our initial check.
+            os.link(staged, target)
+    return {
+        "snapshot_id": snapshot_id,
+        "db": str(target),
+        "tables": len(CORPUS_TABLES),
+        "total_rows": manifest["total_rows"],
+        "raw_archive_included": False,
+    }
 
 
 def _sha256_file(path: Path) -> str:
@@ -177,6 +278,8 @@ def verify_corpus_snapshot(snapshot_dir: Path) -> dict[str, object]:
     root = snapshot_dir.expanduser().resolve()
     manifest_path = root / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("manifest non riconosciuto")
     if manifest.get("format") != "fantabuddy-corpus":
         raise ValueError("manifest non riconosciuto")
     if manifest.get("format_version") != CORPUS_FORMAT_VERSION:
@@ -230,8 +333,7 @@ def verify_corpus_snapshot(snapshot_dir: Path) -> dict[str, object]:
             actual_total_rows += int(row[0])
             verifier.execute("SELECT * FROM read_parquet(?) LIMIT 0", [str(file_path)])
             actual_schema = [
-                {"name": str(column[0]), "type": str(column[1])}
-                for column in verifier.description
+                {"name": str(column[0]), "type": str(column[1])} for column in verifier.description
             ]
             if actual_schema != value.get("schema"):
                 schema_mismatch.append(table_name)

@@ -252,6 +252,8 @@ def archive_recorded_raw_responses(
     for response_id, expected_sha, stored_path, storage_key in rows:
         source_path = _resolve_raw_payload_path(stored_path, storage_key, cache_dir)
         try:
+            if source_path is None:
+                raise FileNotFoundError("payload non incluso nel corpus importato")
             with gzip.open(source_path, "rt", encoding="utf-8") as stream:
                 body = json.load(stream)
         except (OSError, json.JSONDecodeError):
@@ -324,7 +326,11 @@ def _resolve_raw_payload_path(
     stored_path: object,
     storage_key: object,
     cache_dir: Path | None,
-) -> Path:
+) -> Path | None:
+    if stored_path is None:
+        if cache_dir is not None and storage_key:
+            return cache_dir.expanduser().resolve() / Path(str(storage_key))
+        return None
     path = Path(str(stored_path))
     if path.is_file() or cache_dir is None or not storage_key:
         return path
@@ -352,6 +358,8 @@ def verify_recorded_raw_responses(
             continue
         path = _resolve_raw_payload_path(stored_path, storage_key, cache_dir)
         try:
+            if path is None:
+                raise FileNotFoundError("payload non incluso nel corpus importato")
             with gzip.open(path, "rt", encoding="utf-8") as stream:
                 payload = _stable_json(json.load(stream))
         except (OSError, json.JSONDecodeError):

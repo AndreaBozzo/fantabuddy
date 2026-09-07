@@ -78,6 +78,49 @@ The manifest records format and code versions, schemas, row counts, byte sizes a
 SHA-256 checksums. Absolute local paths are excluded. The verifier checks table
 completeness, schema, counts, sizes and hashes without needing DuckDB or an API key.
 
+### Import a shared corpus
+
+Download the corpus ZIP (for example from a shared Google Drive link), then run:
+
+```powershell
+uv run fantabuddy import-corpus downloaded-corpus.zip
+uv run fantabuddy corpus-status
+```
+
+This seeds the default warehouse at `data/warehouse/fantabuddy.duckdb` without an API
+key or provider requests. An extracted snapshot directory containing `manifest.json`
+and the Parquet files works too. ZIPs may contain those files directly or inside one
+enclosing directory.
+
+The destination must not exist, even as an empty file. To keep an existing warehouse,
+choose a separate destination and pass it to subsequent commands:
+
+```powershell
+uv run fantabuddy import-corpus downloaded-corpus.zip --db data/warehouse/shared.duckdb
+uv run fantabuddy corpus-status --db data/warehouse/shared.duckdb
+```
+
+Import verifies completeness, hashes, sizes, row counts and schemas, then checks schema
+compatibility with the installed Fantabuddy version. It loads the normal constrained
+warehouse schema in a temporary database and publishes the closed file atomically.
+Invalid imports leave no destination database. Publishing requires a filesystem with
+hard-link support (such as NTFS); failure leaves an existing destination untouched.
+Import does not merge or overwrite warehouses, and does not download URLs directly.
+
+The snapshot contains normalized data and provenance, **not the original XLSX or raw API
+payloads**. Imported source paths are `NULL`; raw responses retain their checksums,
+storage keys and timestamps, but are marked unavailable locally with an explanatory
+archive note. Ingestion history is retained. Import does not recreate the acquisition
+cache; subsequent provider commands can require an API key and consume quota. Use the
+separate raw archive backup above when you need the original payloads as well.
+
+For analysis outside Fantabuddy, extract the ZIP and query individual Parquet files
+directly with DuckDB; importing a warehouse is optional:
+
+```sql
+SELECT * FROM read_parquet('snapshot/api_player_profiles.parquet') LIMIT 10;
+```
+
 ## Point-in-time rule
 
 Fixture features may use only observations available before the fixture. Keep labels
