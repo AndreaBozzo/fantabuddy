@@ -69,6 +69,15 @@ def test_end_to_end_build_includes_newcomers_and_reconciles_budget(tmp_path: Pat
         projections, metrics = train_and_project(connection, "2026/27")
         assert len(projections) == len(_records(4))
         assert any(projection.name == "Nuovo 4" for projection in projections)
+        assert all(
+            projection.expected_start_share is None
+            and projection.expected_minutes is None
+            and projection.expected_goals is None
+            and projection.expected_assists is None
+            and projection.expected_cards is None
+            and projection.expected_rating is None
+            for projection in projections
+        )
 
         mantra_projections, _ = train_and_project(connection, "2026/27", system="mantra")
         mantra_goalkeeper = next(
@@ -202,6 +211,9 @@ def test_end_to_end_build_includes_newcomers_and_reconciles_budget(tmp_path: Pat
     assert "Rosa API da verificare" in report
     assert "Δ FVM" in report
     assert '"squad_confirmed": null' in report
+    assert '"expected_start_share": null' in report
+    assert '"expected_minutes": null' in report
+    assert "tit. 1%" not in report
     assert 'id="signal"' in report
     assert "const DATA=[{" in report
     assert "&#34;fantacalcio_id&#34;" not in report

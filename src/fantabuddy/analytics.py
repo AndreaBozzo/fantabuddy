@@ -63,12 +63,12 @@ class Projection:
     rosterable: bool = False
     tier: str = "E"
     reliability: int = 0
-    expected_start_share: float = 0.0
-    expected_minutes: float = 0.0
-    expected_goals: float = 0.0
-    expected_assists: float = 0.0
-    expected_cards: float = 0.0
-    expected_rating: float = 0.0
+    expected_start_share: float | None = None
+    expected_minutes: float | None = None
+    expected_goals: float | None = None
+    expected_assists: float | None = None
+    expected_cards: float | None = None
+    expected_rating: float | None = None
     explanation: str = ""
 
 
@@ -437,7 +437,7 @@ def _current_context(
 
 def _performance_values(
     row: dict[str, Any], role_rows: list[dict[str, Any]]
-) -> tuple[float, float, float, float, float]:
+) -> tuple[float | None, float | None, float | None, float | None, float | None]:
     def median(field: str) -> float:
         values = [float(item.get(field, 0.0) or 0.0) for item in role_rows]
         positive = [value for value in values if value > 0]
@@ -445,6 +445,8 @@ def _performance_values(
 
     previous_minutes = float(row.get("prev_minutes", 0.0) or 0.0)
     role_minutes = median("prev_minutes")
+    if previous_minutes <= 0.0 and role_minutes <= 0.0:
+        return None, None, None, None, None
     expected_minutes = 0.75 * previous_minutes + 0.25 * role_minutes
     if previous_minutes <= 0:
         expected_minutes = role_minutes * 0.55
@@ -456,8 +458,12 @@ def _performance_values(
         role_rate = role_count / max(role_minutes, 450.0)
         return expected_minutes * (0.70 * previous_rate + 0.30 * role_rate)
 
-    expected_rating = 0.70 * float(row.get("prev_rating", 0.0) or 0.0) + 0.30 * median(
-        "prev_rating"
+    prev_rating = float(row.get("prev_rating", 0.0) or 0.0)
+    role_rating = median("prev_rating")
+    expected_rating: float | None = (
+        0.70 * prev_rating + 0.30 * role_rating
+        if prev_rating > 0.0 or role_rating > 0.0
+        else None
     )
     return (
         expected_minutes,
@@ -640,13 +646,13 @@ def train_and_project(
             int(row["fantacalcio_id"]): _performance_values(row, role_target) for row in role_target
         }
         objective_values = [
-            goals * scoring.goal
-            + assists * scoring.assist
-            + cards * scoring.yellow_card
+            (goals or 0.0) * scoring.goal
+            + (assists or 0.0) * scoring.assist
+            + (cards or 0.0) * scoring.yellow_card
             + minutes / 380.0
-            + rating * 2.0
+            + (rating or 0.0) * 2.0
             for minutes, goals, assists, cards, rating in performance.values()
-            if minutes > 0
+            if minutes is not None and minutes > 0
         ]
         objective_median = float(np.median(objective_values)) if objective_values else 0.0
         for row in role_target:
@@ -654,19 +660,26 @@ def train_and_project(
             expected_minutes, expected_goals, expected_assists, expected_cards, expected_rating = (
                 performance[player_id]
             )
-            expected_start_share = max(0.01, min(0.99, expected_minutes / (38.0 * 90.0)))
+            expected_start_share: float | None = (
+                max(0.01, min(0.99, expected_minutes / (38.0 * 90.0)))
+                if expected_minutes is not None
+                else None
+            )
             availability = availability_forecasts.get(player_id)
             if availability is not None:
                 previous_expected_minutes = expected_minutes
                 expected_start_share = availability.expected_start_share
                 expected_minutes = availability.expected_match_minutes * 38.0
-                if previous_expected_minutes > 0:
+                if previous_expected_minutes is not None and previous_expected_minutes > 0:
                     volume_ratio = max(
                         0.50, min(1.50, expected_minutes / previous_expected_minutes)
                     )
-                    expected_goals *= volume_ratio
-                    expected_assists *= volume_ratio
-                    expected_cards *= volume_ratio
+                    if expected_goals is not None:
+                        expected_goals *= volume_ratio
+                    if expected_assists is not None:
+                        expected_assists *= volume_ratio
+                    if expected_cards is not None:
+                        expected_cards *= volume_ratio
             historical_baseline = _baseline(row, _role_ratio(role_all))
             if not use_official_fvm_anchor:
                 baseline_score = historical_baseline
@@ -674,13 +687,13 @@ def train_and_project(
                 baseline_score = 0.30 * historical_baseline + 0.70 * float(row["fvm"])
             else:
                 baseline_score = 0.70 * historical_baseline + 0.30 * float(row["fvm"])
-            if objective_median > 0 and expected_minutes > 0:
+            if objective_median > 0 and expected_minutes is not None and expected_minutes > 0:
                 objective = (
-                    expected_goals * scoring.goal
-                    + expected_assists * scoring.assist
-                    + expected_cards * scoring.yellow_card
+                    (expected_goals or 0.0) * scoring.goal
+                    + (expected_assists or 0.0) * scoring.assist
+                    + (expected_cards or 0.0) * scoring.yellow_card
                     + expected_minutes / 380.0
-                    + expected_rating * 2.0
+                    + (expected_rating or 0.0) * 2.0
                 )
                 objective_ratio = max(0.70, min(1.30, objective / objective_median))
                 baseline_score *= 0.85 + 0.15 * objective_ratio
@@ -690,7 +703,8 @@ def train_and_project(
                 if start_share is not None:
                     expected_start_share = float(start_share)
                     baseline_score *= 0.80 + 0.40 * float(start_share)
-                    expected_minutes *= 0.80 + 0.40 * float(start_share)
+                    if expected_minutes is not None:
+                        expected_minutes *= 0.80 + 0.40 * float(start_share)
                 baseline_score *= 1.0 + float(override.get("risk_modifier") or 0.0)
                 baseline_score *= 1.05 if override.get("penalty_rank") == 1 else 1.0
                 baseline_score *= 1.02 if override.get("set_piece_rank") == 1 else 1.0
@@ -702,12 +716,16 @@ def train_and_project(
                 # azzerare giocatori che rientrano comunque in stagione.
                 factor = max(0.15, float(available_share))
                 baseline_score *= factor
-                expected_start_share *= factor
-                expected_minutes *= factor
+                if expected_start_share is not None:
+                    expected_start_share *= factor
+                if expected_minutes is not None:
+                    expected_minutes *= factor
             elif absence is not None or player_id in injured_players:
                 baseline_score *= 0.90
-                expected_start_share *= 0.75
-                expected_minutes *= 0.90
+                if expected_start_share is not None:
+                    expected_start_share *= 0.75
+                if expected_minutes is not None:
+                    expected_minutes *= 0.90
             ml_score: float | None = None
             projected = baseline_score
             if production_model is not None:
@@ -760,12 +778,26 @@ def train_and_project(
                     ml_score=round(ml_score, 3) if ml_score is not None else None,
                     projected_score=round(max(1.0, projected), 3),
                     reliability=reliability,
-                    expected_start_share=round(expected_start_share, 3),
-                    expected_minutes=round(expected_minutes, 1),
-                    expected_goals=round(expected_goals, 2),
-                    expected_assists=round(expected_assists, 2),
-                    expected_cards=round(expected_cards, 2),
-                    expected_rating=round(expected_rating, 2),
+                    expected_start_share=(
+                        round(expected_start_share, 3)
+                        if expected_start_share is not None
+                        else None
+                    ),
+                    expected_minutes=(
+                        round(expected_minutes, 1) if expected_minutes is not None else None
+                    ),
+                    expected_goals=(
+                        round(expected_goals, 2) if expected_goals is not None else None
+                    ),
+                    expected_assists=(
+                        round(expected_assists, 2) if expected_assists is not None else None
+                    ),
+                    expected_cards=(
+                        round(expected_cards, 2) if expected_cards is not None else None
+                    ),
+                    expected_rating=(
+                        round(expected_rating, 2) if expected_rating is not None else None
+                    ),
                     explanation=explanation,
                 )
             )

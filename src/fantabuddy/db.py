@@ -524,22 +524,28 @@ CREATE TABLE IF NOT EXISTS auction_values (
     rosterable BOOLEAN NOT NULL,
     tier VARCHAR NOT NULL,
     reliability INTEGER NOT NULL,
-    expected_start_share DOUBLE NOT NULL DEFAULT 0,
-    expected_minutes DOUBLE NOT NULL DEFAULT 0,
-    expected_goals DOUBLE NOT NULL DEFAULT 0,
-    expected_assists DOUBLE NOT NULL DEFAULT 0,
-    expected_cards DOUBLE NOT NULL DEFAULT 0,
-    expected_rating DOUBLE NOT NULL DEFAULT 0,
+    expected_start_share DOUBLE,
+    expected_minutes DOUBLE,
+    expected_goals DOUBLE,
+    expected_assists DOUBLE,
+    expected_cards DOUBLE,
+    expected_rating DOUBLE,
     explanation VARCHAR NOT NULL,
     PRIMARY KEY (build_id, fantacalcio_id)
 );
 
-ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_minutes DOUBLE DEFAULT 0;
-ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_start_share DOUBLE DEFAULT 0;
-ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_goals DOUBLE DEFAULT 0;
-ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_assists DOUBLE DEFAULT 0;
-ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_cards DOUBLE DEFAULT 0;
-ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_rating DOUBLE DEFAULT 0;
+ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_minutes DOUBLE;
+ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_start_share DOUBLE;
+ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_goals DOUBLE;
+ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_assists DOUBLE;
+ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_cards DOUBLE;
+ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_rating DOUBLE;
+ALTER TABLE auction_values ALTER COLUMN expected_start_share DROP NOT NULL;
+ALTER TABLE auction_values ALTER COLUMN expected_minutes DROP NOT NULL;
+ALTER TABLE auction_values ALTER COLUMN expected_goals DROP NOT NULL;
+ALTER TABLE auction_values ALTER COLUMN expected_assists DROP NOT NULL;
+ALTER TABLE auction_values ALTER COLUMN expected_cards DROP NOT NULL;
+ALTER TABLE auction_values ALTER COLUMN expected_rating DROP NOT NULL;
 
 CREATE OR REPLACE VIEW latest_listone_snapshots AS
 SELECT * EXCLUDE (row_number)

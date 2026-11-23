@@ -350,7 +350,11 @@ def _availability_alerts(
             -int(row["rosterable"]),
             -int(row["return_status"] == "dated"),
             -int(row["suggested_credits"]),
-            -float(row["expected_start_share"]),
+            (
+                -float(row["expected_start_share"])
+                if row["expected_start_share"] is not None
+                else 1.0
+            ),
             str(row["name"]).casefold(),
         ),
     )
@@ -489,6 +493,7 @@ def _build_watchlist(data: list[dict[str, Any]], roles: tuple[str, ...]) -> list
                 if _has_role(row, role)
                 and row["rosterable"]
                 and int(row["suggested_credits"]) <= 40
+                and row["expected_start_share"] is not None
                 and float(row["expected_start_share"]) >= 0.60
                 and int(row["reliability"]) >= 55
                 and not row["has_availability_alert"]
@@ -782,7 +787,7 @@ def render_report(connection: duckdb.DuckDBPyConnection, build_id: str, output_p
         budget_per_team=config["budget"],
         data_json=json.dumps(data, ensure_ascii=False).replace("</", "<\\/"),
         fmt=lambda value: "—" if value is None else f"{value:.2f}",
-        pct=lambda value: f"{100 * float(value):.0f}%",
+        pct=lambda value: "—" if value is None else f"{100 * float(value):.0f}%",
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(rendered, encoding="utf-8")
