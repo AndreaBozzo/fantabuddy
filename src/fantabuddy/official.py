@@ -20,7 +20,7 @@ OFFICIAL_ARCHIVE_START = 2015
 OFFICIAL_ARCHIVE_END = 2026
 OFFICIAL_BASE_URL = "https://www.fantacalcio.it/quotazioni-fantacalcio"
 PLAYER_ID_PATTERN = re.compile(r"/(\d+)(?:/(\d{4}-\d{2}))?/?$")
-USER_AGENT = "fantabuddy/0.4 (+https://github.com/AndreaBozzo/fantabuddy)"
+USER_AGENT = "fantabuddy/0.5 (+https://github.com/AndreaBozzo/fantabuddy)"
 
 
 def download_official_html(
