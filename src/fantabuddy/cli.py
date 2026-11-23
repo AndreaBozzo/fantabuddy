@@ -27,7 +27,7 @@ from fantabuddy.editorial import (
     import_editorial_availability,
     read_editorial_availability,
 )
-from fantabuddy.excel import read_listone
+from fantabuddy.excel import read_listone, season_start_year
 from fantabuddy.features import materialize_player_fixture_features
 from fantabuddy.mapping import export_pending_mappings, import_mapping_csv, reconcile_season
 from fantabuddy.official import (
@@ -370,7 +370,7 @@ def reconcile_all(
         result: dict[str, dict[str, int]] = {}
         for item in listone_summary(connection):
             season = str(item["season"])
-            season_start = int(season.split("/", maxsplit=1)[0])
+            season_start = season_start_year(season)
             api_count_row = connection.execute(
                 "SELECT count(*) FROM api_player_season_stats WHERE season_start = ?",
                 [season_start],
@@ -1018,7 +1018,7 @@ def build(
         raise typer.BadParameter("as-of deve usare il formato YYYY-MM-DD") from exc
     config = load_league_config(config_path)
     with database(db_path) as connection:
-        season_start = int(season.split("/", maxsplit=1)[0])
+        season_start = season_start_year(season)
         provider_row = connection.execute(
             """
             SELECT count(*) FROM (

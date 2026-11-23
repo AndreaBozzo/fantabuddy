@@ -10,6 +10,7 @@ import duckdb
 from jinja2 import BaseLoader, Environment, select_autoescape
 
 from fantabuddy.config import MANTRA_ROLES, LeagueConfig
+from fantabuddy.excel import season_start_year
 
 REPORT_TEMPLATE = """<!doctype html>
 <html lang="it">
@@ -580,6 +581,7 @@ def render_report(connection: duckdb.DuckDBPyConnection, build_id: str, output_p
     ).fetchone()
     if listone is None:
         raise RuntimeError("metadati listone mancanti")
+    season_start = season_start_year(str(build[0]))
     coverage = connection.execute(
         """
         SELECT
@@ -621,15 +623,14 @@ def render_report(connection: duckdb.DuckDBPyConnection, build_id: str, output_p
             build[0],
             build[0],
             build[0],
-            int(str(build[0]).split("/")[0]),
-            int(str(build[0]).split("/")[0]),
+            season_start,
+            season_start,
             build_id,
         ],
     ).fetchone()
     if coverage is None:
         raise RuntimeError("impossibile calcolare la copertura API")
     mapped_count, mapping_decision_count, pending_count, squad_confirmed_count = coverage
-    season_start = int(str(build[0]).split("/")[0])
     current_stats_row = connection.execute(
         "SELECT count(*) FROM api_player_season_stats WHERE season_start = ?", [season_start]
     ).fetchone()

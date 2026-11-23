@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -20,6 +21,45 @@ OFFICIAL_ARCHIVE_END = 2026
 OFFICIAL_BASE_URL = "https://www.fantacalcio.it/quotazioni-fantacalcio"
 PLAYER_ID_PATTERN = re.compile(r"/(\d+)(?:/(\d{4}-\d{2}))?/?$")
 USER_AGENT = "fantabuddy/0.4 (+https://github.com/AndreaBozzo/fantabuddy)"
+
+
+def download_official_html(
+    url: str,
+    target: Path,
+    *,
+    validate: Callable[[Path], object],
+    refresh: bool = False,
+    transport: httpx.BaseTransport | None = None,
+    check_response: Callable[[httpx.Response], None] | None = None,
+) -> tuple[Path, bool]:
+    """Scarica una pagina ufficiale Fantacalcio con cache-first e scrittura atomica."""
+    target = target.expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_file() and not refresh:
+        return target, True
+
+    with httpx.Client(
+        follow_redirects=True,
+        timeout=30.0,
+        headers={"User-Agent": USER_AGENT},
+        transport=transport,
+    ) as client:
+        response = client.get(url)
+        response.raise_for_status()
+    if str(response.url).rstrip("/") != url:
+        raise ValueError(f"la pagina ufficiale {url} reindirizza a {response.url}")
+    if check_response is not None:
+        check_response(response)
+
+    temporary = target.with_suffix(".html.tmp")
+    temporary.write_bytes(response.content)
+    try:
+        validate(temporary)
+        temporary.replace(target)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return target, False
 
 
 def season_slug(start_year: int) -> str:
@@ -44,35 +84,21 @@ def download_official_listone(
     transport: httpx.BaseTransport | None = None,
 ) -> tuple[Path, bool]:
     slug = season_slug(start_year)
-    output_dir = output_dir.expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    target = output_dir / f"quotazioni-{slug}.html"
-    if target.is_file() and not refresh:
-        return target, True
-
     url = official_url(start_year)
-    with httpx.Client(
-        follow_redirects=True,
-        timeout=30.0,
-        headers={"User-Agent": USER_AGENT},
-        transport=transport,
-    ) as client:
-        response = client.get(url)
-        response.raise_for_status()
-    if str(response.url).rstrip("/") != url:
-        raise ValueError(f"la pagina ufficiale {url} reindirizza a {response.url}")
-    if f"Serie A {start_year}/{str(start_year + 1)[-2:]}" not in response.text:
-        raise ValueError(f"la pagina ufficiale non dichiara la stagione attesa: {url}")
+    expected_label = f"Serie A {start_year}/{str(start_year + 1)[-2:]}"
 
-    temporary = target.with_suffix(".html.tmp")
-    temporary.write_bytes(response.content)
-    try:
-        read_official_listone(temporary, start_year)
-        temporary.replace(target)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
-    return target, False
+    def _check_season(response: httpx.Response) -> None:
+        if expected_label not in response.text:
+            raise ValueError(f"la pagina ufficiale non dichiara la stagione attesa: {url}")
+
+    return download_official_html(
+        url,
+        output_dir / f"quotazioni-{slug}.html",
+        validate=lambda path: read_official_listone(path, start_year),
+        refresh=refresh,
+        transport=transport,
+        check_response=_check_season,
+    )
 
 
 def _text(row: Tag, selector: str, field: str) -> str:

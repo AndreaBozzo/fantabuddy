@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -17,6 +16,7 @@ import duckdb
 
 from fantabuddy import __version__
 from fantabuddy.db import database
+from fantabuddy.excel import file_sha256
 
 CORPUS_FORMAT_VERSION = 1
 CORPUS_TABLES = (
@@ -224,14 +224,6 @@ def import_corpus_snapshot(source: Path, db_path: Path) -> dict[str, object]:
     }
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _portable_select(table_name: str) -> str:
     return _PORTABLE_SELECTS.get(table_name, f"SELECT * FROM {table_name}")
 
@@ -289,7 +281,7 @@ def export_corpus_snapshot(
                 "file": file_name,
                 "rows": row_count,
                 "bytes": file_path.stat().st_size,
-                "sha256": _sha256_file(file_path),
+                "sha256": file_sha256(file_path),
                 "schema": schema,
             }
 
@@ -393,7 +385,7 @@ def verify_corpus_snapshot(snapshot_dir: Path) -> dict[str, object]:
             if not isinstance(expected_bytes, int) or file_path.stat().st_size != expected_bytes:
                 size_mismatch.append(table_name)
                 continue
-            if _sha256_file(file_path) != value.get("sha256"):
+            if file_sha256(file_path) != value.get("sha256"):
                 checksum_mismatch.append(table_name)
                 continue
             row = verifier.execute(

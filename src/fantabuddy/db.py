@@ -583,6 +583,18 @@ def database(path: Path, *, read_only: bool = False) -> Iterator[duckdb.DuckDBPy
         connection.close()
 
 
+@contextmanager
+def transaction(connection: duckdb.DuckDBPyConnection) -> Iterator[None]:
+    connection.execute("BEGIN TRANSACTION")
+    try:
+        yield
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
+    else:
+        connection.execute("COMMIT")
+
+
 def ingest_listone(connection: duckdb.DuckDBPyConnection, data: ListoneImport) -> bool:
     exists_row = connection.execute(
         "SELECT count(*) FROM listone_snapshots WHERE snapshot_id = ?", [data.snapshot_id]
@@ -594,8 +606,7 @@ def ingest_listone(connection: duckdb.DuckDBPyConnection, data: ListoneImport) -
         return False
 
     now = datetime.now(tz=UTC)
-    connection.execute("BEGIN TRANSACTION")
-    try:
+    with transaction(connection):
         connection.execute(
             """
             INSERT INTO listone_snapshots (
@@ -654,10 +665,6 @@ def ingest_listone(connection: duckdb.DuckDBPyConnection, data: ListoneImport) -
             """,
             rows,
         )
-        connection.execute("COMMIT")
-    except Exception:
-        connection.execute("ROLLBACK")
-        raise
     return True
 
 

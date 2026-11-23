@@ -9,6 +9,8 @@ import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.metrics import brier_score_loss, mean_absolute_error
 
+from fantabuddy.excel import season_start_year
+
 AVAILABILITY_FEATURES = (
     "history_squad_matches",
     "history_appearances",
@@ -179,7 +181,7 @@ def train_availability_models(
     target_season: str,
     as_of: date,
 ) -> tuple[dict[int, AvailabilityForecast], AvailabilityValidation | None]:
-    target_start = int(target_season.split("/", maxsplit=1)[0])
+    target_start = season_start_year(target_season)
     train, validation = _training_rows(connection, target_start)
     current = _current_rows(connection, target_season, as_of)
     if len(train) < 500 or len(validation) < 100 or not current:

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import duckdb
 
+from fantabuddy.excel import season_start_year
 from fantabuddy.provider import normalize_name
 
 TEAM_ALIASES = {
@@ -107,7 +108,7 @@ def _candidate_score(
 
 
 def reconcile_season(connection: duckdb.DuckDBPyConnection, season: str) -> dict[str, int]:
-    season_start = int(season.split("/", maxsplit=1)[0])
+    season_start = season_start_year(season)
     fanta_rows = connection.execute(
         """
         SELECT fantacalcio_id, name, team

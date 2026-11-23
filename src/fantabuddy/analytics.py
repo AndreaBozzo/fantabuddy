@@ -14,6 +14,7 @@ from sklearn.metrics import mean_absolute_error
 
 from fantabuddy.availability import train_availability_models
 from fantabuddy.config import MANTRA_ROLES, ROLES, LeagueConfig, ScoringConfig
+from fantabuddy.excel import season_start_year
 
 FEATURE_NAMES = (
     "quote_initial",
@@ -288,7 +289,7 @@ def _season_round_dates(
     connection: duckdb.DuckDBPyConnection, target_season: str
 ) -> list[date]:
     """Data rappresentativa di ciascuna giornata, per pesare l'assenza sul residuo."""
-    season_start = int(target_season.split("/", maxsplit=1)[0])
+    season_start = season_start_year(target_season)
     return [
         row[1]
         for row in connection.execute(
@@ -397,7 +398,7 @@ def _current_context(
     overrides = {
         int(row[0]): dict(zip(override_columns, row[1:], strict=True)) for row in override_rows
     }
-    season_start = int(target_season.split("/", maxsplit=1)[0])
+    season_start = season_start_year(target_season)
     injury_rows = connection.execute(
         """
         SELECT DISTINCT m.fantacalcio_id
@@ -476,7 +477,7 @@ def train_and_project(
     scoring = scoring or ScoringConfig()
     overrides, injured_players = _current_context(connection, target_season, as_of)
     editorial_absences = _editorial_absences(connection, target_season, as_of)
-    target_start = int(target_season.split("/", maxsplit=1)[0])
+    target_start = season_start_year(target_season)
     api = _api_features(connection)
     examples = build_examples(connection, system)
     train_completed = [row for row in examples if int(row["season_start"]) < target_start]

@@ -4,6 +4,8 @@ from typing import Any
 
 import duckdb
 
+from fantabuddy.db import transaction
+
 MATERIALIZE_PLAYER_FIXTURE_FEATURES_SQL = """
 INSERT INTO ml_player_fixture_features
 WITH player_base AS (
@@ -197,14 +199,9 @@ LEFT JOIN team_rolling opponent
 def materialize_player_fixture_features(
     connection: duckdb.DuckDBPyConnection,
 ) -> dict[str, Any]:
-    connection.execute("BEGIN TRANSACTION")
-    try:
+    with transaction(connection):
         connection.execute("DELETE FROM ml_player_fixture_features")
         connection.execute(MATERIALIZE_PLAYER_FIXTURE_FEATURES_SQL)
-        connection.execute("COMMIT")
-    except Exception:
-        connection.execute("ROLLBACK")
-        raise
     row = connection.execute(
         """
         SELECT count(*), count(DISTINCT api_player_id), min(feature_as_of), max(feature_as_of),
