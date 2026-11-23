@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections import defaultdict
@@ -12,7 +13,7 @@ import numpy as np
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error
 
-from fantabuddy.availability import train_availability_models
+from fantabuddy.availability import AvailabilityValidation, train_availability_models
 from fantabuddy.config import MANTRA_ROLES, ROLES, LeagueConfig, ScoringConfig
 from fantabuddy.excel import season_start_year
 
@@ -205,11 +206,14 @@ def _api_features(connection: duckdb.DuckDBPyConnection) -> dict[tuple[int, int]
 def build_examples(
     connection: duckdb.DuckDBPyConnection,
     system: Literal["classic", "mantra"] = "classic",
+    *,
+    listone_rows: list[dict[str, Any]] | None = None,
+    api_features: dict[tuple[int, int], dict[str, float]] | None = None,
 ) -> list[dict[str, Any]]:
     history: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for row in _rows(connection, system):
+    for row in listone_rows if listone_rows is not None else _rows(connection, system):
         history[int(row["fantacalcio_id"])].append(row)
-    api = _api_features(connection)
+    api = api_features if api_features is not None else _api_features(connection)
     examples: list[dict[str, Any]] = []
     for player_id, player_rows in history.items():
         player_rows.sort(key=lambda row: int(row["season_start"]))
@@ -464,6 +468,111 @@ def _performance_values(
     )
 
 
+def _availability_metrics(validation: AvailabilityValidation) -> list[ModelMetric]:
+    return [
+        ModelMetric(
+            role="START",
+            train_count=validation.train_count,
+            validation_count=validation.validation_count,
+            baseline_mae=validation.start_baseline_brier,
+            ml_mae=validation.start_model_brier,
+            baseline_spearman=None,
+            ml_spearman=None,
+            use_ml=validation.use_start_model,
+            ml_weight=1.0 if validation.use_start_model else 0.0,
+        ),
+        ModelMetric(
+            role="MIN",
+            train_count=validation.train_count,
+            validation_count=validation.validation_count,
+            baseline_mae=validation.minutes_baseline_mae,
+            ml_mae=validation.minutes_model_mae,
+            baseline_spearman=None,
+            ml_spearman=None,
+            use_ml=validation.use_minutes_model,
+            ml_weight=1.0 if validation.use_minutes_model else 0.0,
+        ),
+    ]
+
+
+def _train_role_outcome_model(
+    role: str, role_outcomes: list[dict[str, Any]]
+) -> tuple[ModelMetric, GradientBoostingRegressor | None, float]:
+    baseline_mae: float | None = None
+    ml_mae: float | None = None
+    baseline_corr: float | None = None
+    ml_corr: float | None = None
+    use_ml = False
+    ml_weight = 0.0
+    oof_actual: list[float] = []
+    oof_baseline: list[float] = []
+    oof_model: list[float] = []
+    validation_years = sorted({int(row["season_start"]) for row in role_outcomes})[-2:]
+    for validation_year in validation_years:
+        fold_train = [row for row in role_outcomes if int(row["season_start"]) < validation_year]
+        fold_validation = [
+            row for row in role_outcomes if int(row["season_start"]) == validation_year
+        ]
+        if len(fold_train) < 25 or len(fold_validation) < 8:
+            continue
+        validation_model = _outcome_model()
+        validation_model.fit(
+            np.array([_feature_vector(row) for row in fold_train]),
+            np.array([float(row["realized_score"]) for row in fold_train]),
+        )
+        fold_ratio = _outcome_ratio(fold_train)
+        oof_actual.extend(float(row["realized_score"]) for row in fold_validation)
+        oof_baseline.extend(float(row["fvm"]) * fold_ratio for row in fold_validation)
+        oof_model.extend(
+            validation_model.predict(np.array([_feature_vector(row) for row in fold_validation]))
+        )
+
+    if oof_actual:
+        actual = np.array(oof_actual)
+        baseline_values = np.array(oof_baseline)
+        raw_model_values = np.array(oof_model)
+        baseline_mae = float(mean_absolute_error(actual, baseline_values))
+        baseline_corr = spearman(actual, baseline_values)
+        best: tuple[float, float, float] | None = None
+        for candidate_weight in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6):
+            ensemble = (1.0 - candidate_weight) * baseline_values + (
+                candidate_weight * raw_model_values
+            )
+            candidate_mae = float(mean_absolute_error(actual, ensemble))
+            candidate_corr = spearman(actual, ensemble)
+            if (
+                candidate_mae <= baseline_mae * 0.97
+                and candidate_corr >= baseline_corr - 0.005
+                and (best is None or candidate_mae < best[1])
+            ):
+                best = (candidate_weight, candidate_mae, candidate_corr)
+        if best:
+            ml_weight, ml_mae, ml_corr = best
+            use_ml = True
+
+    production_model: GradientBoostingRegressor | None = None
+    outcome_ratio = _outcome_ratio(role_outcomes)
+    if use_ml and len(role_outcomes) >= 25:
+        production_model = _outcome_model()
+        production_model.fit(
+            np.array([_feature_vector(row) for row in role_outcomes]),
+            np.array([float(row["realized_score"]) for row in role_outcomes]),
+        )
+
+    metric = ModelMetric(
+        role=role,
+        train_count=len(role_outcomes),
+        validation_count=len(oof_actual),
+        baseline_mae=baseline_mae,
+        ml_mae=ml_mae,
+        baseline_spearman=baseline_corr,
+        ml_spearman=ml_corr,
+        use_ml=use_ml,
+        ml_weight=ml_weight,
+    )
+    return metric, production_model, outcome_ratio
+
+
 def train_and_project(
     connection: duckdb.DuckDBPyConnection,
     target_season: str,
@@ -478,15 +587,16 @@ def train_and_project(
     overrides, injured_players = _current_context(connection, target_season, as_of)
     editorial_absences = _editorial_absences(connection, target_season, as_of)
     target_start = season_start_year(target_season)
+    listone_rows = _rows(connection, system)
     api = _api_features(connection)
-    examples = build_examples(connection, system)
+    examples = build_examples(connection, system, listone_rows=listone_rows, api_features=api)
     train_completed = [row for row in examples if int(row["season_start"]) < target_start]
     target_by_id = {
         int(row["fantacalcio_id"]): row
         for row in examples
         if row["season"] == target_season and row["status"] == "active"
     }
-    for row in _rows(connection, system):
+    for row in listone_rows:
         if row["season"] != target_season or row["status"] != "active":
             continue
         player_id = int(row["fantacalcio_id"])
@@ -513,116 +623,18 @@ def train_and_project(
     availability_forecasts, availability_validation = train_availability_models(
         connection, target_season, as_of
     )
-    metrics: list[ModelMetric] = []
-    if availability_validation is not None:
-        metrics.extend(
-            [
-                ModelMetric(
-                    role="START",
-                    train_count=availability_validation.train_count,
-                    validation_count=availability_validation.validation_count,
-                    baseline_mae=availability_validation.start_baseline_brier,
-                    ml_mae=availability_validation.start_model_brier,
-                    baseline_spearman=None,
-                    ml_spearman=None,
-                    use_ml=availability_validation.use_start_model,
-                    ml_weight=1.0 if availability_validation.use_start_model else 0.0,
-                ),
-                ModelMetric(
-                    role="MIN",
-                    train_count=availability_validation.train_count,
-                    validation_count=availability_validation.validation_count,
-                    baseline_mae=availability_validation.minutes_baseline_mae,
-                    ml_mae=availability_validation.minutes_model_mae,
-                    baseline_spearman=None,
-                    ml_spearman=None,
-                    use_ml=availability_validation.use_minutes_model,
-                    ml_weight=1.0 if availability_validation.use_minutes_model else 0.0,
-                ),
-            ]
-        )
+    metrics: list[ModelMetric] = (
+        _availability_metrics(availability_validation)
+        if availability_validation is not None
+        else []
+    )
     projections: list[Projection] = []
     for role in ROLES:
         role_all = [row for row in train_completed if row["classic_role"] == role]
         role_outcomes = [row for row in role_all if row.get("realized_score") is not None]
-        baseline_mae: float | None = None
-        ml_mae: float | None = None
-        baseline_corr: float | None = None
-        ml_corr: float | None = None
-        use_ml = False
-        ml_weight = 0.0
-        oof_actual: list[float] = []
-        oof_baseline: list[float] = []
-        oof_model: list[float] = []
-        validation_years = sorted({int(row["season_start"]) for row in role_outcomes})[-2:]
-        for validation_year in validation_years:
-            fold_train = [
-                row for row in role_outcomes if int(row["season_start"]) < validation_year
-            ]
-            fold_validation = [
-                row for row in role_outcomes if int(row["season_start"]) == validation_year
-            ]
-            if len(fold_train) < 25 or len(fold_validation) < 8:
-                continue
-            validation_model = _outcome_model()
-            validation_model.fit(
-                np.array([_feature_vector(row) for row in fold_train]),
-                np.array([float(row["realized_score"]) for row in fold_train]),
-            )
-            fold_ratio = _outcome_ratio(fold_train)
-            oof_actual.extend(float(row["realized_score"]) for row in fold_validation)
-            oof_baseline.extend(float(row["fvm"]) * fold_ratio for row in fold_validation)
-            oof_model.extend(
-                validation_model.predict(
-                    np.array([_feature_vector(row) for row in fold_validation])
-                )
-            )
-
-        if oof_actual:
-            actual = np.array(oof_actual)
-            baseline_values = np.array(oof_baseline)
-            raw_model_values = np.array(oof_model)
-            baseline_mae = float(mean_absolute_error(actual, baseline_values))
-            baseline_corr = spearman(actual, baseline_values)
-            best: tuple[float, float, float] | None = None
-            for candidate_weight in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6):
-                ensemble = (
-                    1.0 - candidate_weight
-                ) * baseline_values + candidate_weight * raw_model_values
-                candidate_mae = float(mean_absolute_error(actual, ensemble))
-                candidate_corr = spearman(actual, ensemble)
-                if (
-                    candidate_mae <= baseline_mae * 0.97
-                    and candidate_corr >= baseline_corr - 0.005
-                    and (best is None or candidate_mae < best[1])
-                ):
-                    best = (candidate_weight, candidate_mae, candidate_corr)
-            if best:
-                ml_weight, ml_mae, ml_corr = best
-                use_ml = True
-
-        production_model: GradientBoostingRegressor | None = None
-        outcome_ratio = _outcome_ratio(role_outcomes)
-        if use_ml and len(role_outcomes) >= 25:
-            production_model = _outcome_model()
-            production_model.fit(
-                np.array([_feature_vector(row) for row in role_outcomes]),
-                np.array([float(row["realized_score"]) for row in role_outcomes]),
-            )
-
-        metrics.append(
-            ModelMetric(
-                role=role,
-                train_count=len(role_outcomes),
-                validation_count=len(oof_actual),
-                baseline_mae=baseline_mae,
-                ml_mae=ml_mae,
-                baseline_spearman=baseline_corr,
-                ml_spearman=ml_corr,
-                use_ml=use_ml,
-                ml_weight=ml_weight,
-            )
-        )
+        metric, production_model, outcome_ratio = _train_role_outcome_model(role, role_outcomes)
+        metrics.append(metric)
+        ml_weight = metric.ml_weight
         role_target = [row for row in target if row["classic_role"] == role]
         performance = {
             int(row["fantacalcio_id"]): _performance_values(row, role_target) for row in role_target
@@ -924,7 +936,6 @@ def persist_build(
     ).fetchone()
     if not snapshot_row:
         raise ValueError(f"snapshot listone mancante per {season}")
-    import hashlib
 
     raw_hash_row = connection.execute(
         """

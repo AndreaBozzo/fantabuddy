@@ -61,6 +61,20 @@ _MAX_MANIFEST_BYTES = 16 * 1024**2
 _IMPORT_DISK_RESERVE = 64 * 1024**2
 
 
+def _query_schema(
+    connection: duckdb.DuckDBPyConnection,
+    sql: str,
+    params: list[object] | None = None,
+) -> list[dict[str, str]]:
+    if params is None:
+        connection.execute(sql)
+    else:
+        connection.execute(sql, params)
+    return [
+        {"name": str(column[0]), "type": str(column[1])} for column in connection.description
+    ]
+
+
 def _import_budget(destination: Path) -> int:
     budget = min(_MAX_IMPORT_BYTES, shutil.disk_usage(destination).free - _IMPORT_DISK_RESERVE)
     if budget <= 0:
@@ -186,11 +200,7 @@ def import_corpus_snapshot(source: Path, db_path: Path) -> dict[str, object]:
             with database(staged) as connection:
                 connection.execute("BEGIN TRANSACTION")
                 for name in CORPUS_TABLES:
-                    connection.execute(f"{_portable_select(name)} LIMIT 0")
-                    expected = [
-                        {"name": str(column[0]), "type": str(column[1])}
-                        for column in connection.description
-                    ]
+                    expected = _query_schema(connection, f"{_portable_select(name)} LIMIT 0")
                     metadata = manifest["tables"][name]
                     if sorted(metadata["schema"], key=lambda column: column["name"]) != sorted(
                         expected, key=lambda column: column["name"]
@@ -271,11 +281,9 @@ def export_corpus_snapshot(
             if row is None:
                 raise RuntimeError(f"impossibile verificare {table_name}")
             row_count = int(row[0])
-            connection.execute("SELECT * FROM read_parquet(?) LIMIT 0", [str(file_path)])
-            schema = [
-                {"name": str(column[0]), "type": str(column[1])}
-                for column in connection.description
-            ]
+            schema = _query_schema(
+                connection, "SELECT * FROM read_parquet(?) LIMIT 0", [str(file_path)]
+            )
             total_rows += row_count
             tables[table_name] = {
                 "file": file_name,
@@ -396,10 +404,9 @@ def verify_corpus_snapshot(snapshot_dir: Path) -> dict[str, object]:
                 row_count_mismatch.append(table_name)
                 continue
             actual_total_rows += int(row[0])
-            verifier.execute("SELECT * FROM read_parquet(?) LIMIT 0", [str(file_path)])
-            actual_schema = [
-                {"name": str(column[0]), "type": str(column[1])} for column in verifier.description
-            ]
+            actual_schema = _query_schema(
+                verifier, "SELECT * FROM read_parquet(?) LIMIT 0", [str(file_path)]
+            )
             if actual_schema != value.get("schema"):
                 schema_mismatch.append(table_name)
                 continue
