@@ -32,6 +32,20 @@ def test_enabled_defense_modifier_requires_ordered_bands() -> None:
         )
 
 
+def test_partial_scoring_rules_preserve_unknown_values() -> None:
+    config = LeagueConfig(
+        defense_modifier={"enabled": True, "bands": []},
+        scoring={"goalkeeper_own_goal": -1, "goal_conceded": None, "penalty_missed": None},
+    )
+    restored = LeagueConfig.model_validate_json(config.model_dump_json())
+    assert restored.defense_modifier.enabled
+    assert restored.defense_modifier.bands == []
+    assert restored.scoring.own_goal == -2
+    assert restored.scoring.goalkeeper_own_goal == -1
+    assert restored.scoring.goal_conceded is None
+    assert restored.scoring.penalty_missed is None
+
+
 def test_mantra_uses_free_roster_with_two_or_more_goalkeepers() -> None:
     config = LeagueConfig(
         system="mantra",

@@ -114,16 +114,19 @@ Dettagli e prompt di esempio: [workflow agentico](docs/agentic-workflow.md).
 - **Point-in-time.** Il futuro non entra nelle feature del passato.
 - **Baseline prima dell'ego.** Un modello entra nel report solo se batte una baseline
   temporale.
-- **Graceful degradation.** I listoni ufficiali costruiscono una base gratuita; l'API
-  aggiunge profondità quando disponibile.
+- **Graceful degradation.** Listone ufficiale e indisponibili si leggono senza chiave
+  API e costruiscono una base gratuita; l'API aggiunge profondità quando disponibile.
 - **Provenance verificabile.** URL, timestamp, raw payload e checksum accompagnano il dato.
 
 ## Limiti onesti
 
-Il rating API non è il voto ufficiale Fantacalcio. Gli infortuni sono segnali da
-verificare, non cartelle cliniche. FVM e quotazioni sono riferimenti di mercato, non il
-prezzo giusto per ogni lega. I match ambigui tra provider restano in revisione invece di
-essere accettati automaticamente.
+Il rating API non è il voto ufficiale Fantacalcio. Gli infortuni arrivano dalla redazione
+ufficiale Fantacalcio, fonte gratuita e aggiornata in stagione: sono segnali da verificare,
+non cartelle cliniche, e le finestre di rientro restano stime redazionali. Il prezzo
+consigliato sconta le giornate di assenza stimate, non il regolamento di sostituzione
+della lega. FVM e quotazioni sono riferimenti di mercato, non il prezzo giusto per ogni
+lega. I match ambigui tra provider restano in revisione invece di essere accettati
+automaticamente.
 
 La metodologia completa è in [Methodology and limits](docs/methodology.md).
 

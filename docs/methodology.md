@@ -26,10 +26,33 @@ two auction pools, POR and movement. This respects the absence of a fixed positi
 roster cage, but deliberately does not optimize a recommended squad or guarantee coverage
 for a chosen formation.
 
+## Availability and declared absences
+
+The official Fantacalcio desk (`/indisponibili-serie-a`) is the primary availability
+source, because it stays free and is updated in season. API injury and sidelined records
+remain as a secondary signal where the paid plan has covered them.
+
+A notice reduces the recommended price in proportion to the share of the remaining
+season it covers, not by a flat penalty. The remaining matchdays come from the fixture
+calendar, and the estimated return date comes from the editorial text: `metà ottobre`
+resolves to the 15th, `inizio` to the 5th, `fine` to the 28th, and so on. A player out
+for two of thirty-four remaining rounds loses a few per cent; a player out until January
+loses close to half. A floor keeps a long absence from zeroing a player who still returns
+within the season.
+
+These conventions of reading are declared, not communicated by the clubs. Where the text
+names no month, no return date is derived: the player keeps the conservative flat
+treatment and the report marks the return as still to be verified. A suspension with no
+stated duration costs one matchday rather than an open-ended absence.
+
 ## What the report can and cannot say
 
 - API-Football ratings are provider ratings, not official Fantacalcio votes.
 - Injury and sidelined records are monitoring signals, not medical certainty.
+- Return windows are editorial estimates. The derived date is a reading convention
+  applied to that estimate, and inherits its uncertainty.
+- A league rule that allows replacing a long-term injury is not modeled: the price
+  reflects lost matchdays, not the administrative remedy.
 - FVM and quotations are market references, not automatic spending limits.
 - Missing data stays missing. Historical official pages without FVM are marked as such.
 - Provider anomalies remain traceable to raw payloads; curation should add an explicit

@@ -16,9 +16,10 @@ class ScoringConfig(BaseModel):
     yellow_card: float = -0.5
     red_card: float = -1.0
     own_goal: float = -2.0
-    penalty_missed: float = -3.0
+    goalkeeper_own_goal: float | None = None
+    penalty_missed: float | None = -3.0
     penalty_saved: float = 3.0
-    goal_conceded: float = -1.0
+    goal_conceded: float | None = -1.0
     clean_sheet: float = 0.0
 
 
@@ -34,8 +35,6 @@ class DefenseModifierConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_bands(self) -> DefenseModifierConfig:
-        if self.enabled and not self.bands:
-            raise ValueError("un modificatore difesa attivo richiede almeno una fascia")
         thresholds = [band.min_average for band in self.bands]
         if thresholds != sorted(set(thresholds)):
             raise ValueError("le fasce del modificatore devono avere soglie uniche e crescenti")

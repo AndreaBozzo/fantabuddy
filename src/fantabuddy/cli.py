@@ -22,6 +22,11 @@ from fantabuddy.corpus import (
 )
 from fantabuddy.curation import import_overrides_csv
 from fantabuddy.db import corpus_inventory, database, ingest_listone, listone_summary
+from fantabuddy.editorial import (
+    download_editorial_availability,
+    import_editorial_availability,
+    read_editorial_availability,
+)
 from fantabuddy.excel import read_listone
 from fantabuddy.features import materialize_player_fixture_features
 from fantabuddy.mapping import export_pending_mappings, import_mapping_csv, reconcile_season
@@ -161,6 +166,33 @@ def ingest_official_listones(
                     ensure_ascii=False,
                 )
             )
+
+
+@app.command("ingest-availability")
+def ingest_availability(
+    season: Annotated[str, typer.Option("--season")] = "2026/27",
+    output_dir: Annotated[Path, typer.Option("--output-dir")] = Path(
+        "data/raw/fantacalcio"
+    ),
+    as_of: Annotated[str, typer.Option("--as-of", help="Data snapshot YYYY-MM-DD")] = "",
+    db_path: Annotated[Path, typer.Option("--db")] = DEFAULT_DB,
+    refresh: Annotated[bool, typer.Option("--refresh")] = False,
+) -> None:
+    """Acquisisce gli indisponibili dalla redazione ufficiale, senza chiavi API."""
+    reference = date.fromisoformat(as_of) if as_of else date.today()
+    target_dir = output_dir / reference.strftime("%Y%m%d")
+    path, cached = download_editorial_availability(target_dir, refresh=refresh)
+    snapshot = read_editorial_availability(path)
+    with database(db_path) as connection:
+        summary = import_editorial_availability(connection, snapshot, season, reference)
+    typer.echo(
+        json.dumps(
+            {"download": "cache" if cached else "network", "as_of": reference.isoformat()}
+            | summary,
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 @app.command("provider-check")

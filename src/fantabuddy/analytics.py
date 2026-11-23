@@ -284,6 +284,95 @@ def _outcome_ratio(rows: list[dict[str, Any]]) -> float:
     return float(np.median(ratios)) if ratios else 1.0
 
 
+def _season_round_dates(
+    connection: duckdb.DuckDBPyConnection, target_season: str
+) -> list[date]:
+    """Data rappresentativa di ciascuna giornata, per pesare l'assenza sul residuo."""
+    season_start = int(target_season.split("/", maxsplit=1)[0])
+    return [
+        row[1]
+        for row in connection.execute(
+            """
+            SELECT round, min(CAST(kickoff_at AS DATE)) AS round_date
+            FROM api_fixtures
+            WHERE season_start = ? AND kickoff_at IS NOT NULL
+            GROUP BY round
+            ORDER BY round_date
+            """,
+            [season_start],
+        ).fetchall()
+    ]
+
+
+def _available_share(
+    round_dates: list[date], as_of: date, return_date: date | None, missed_rounds: int | None
+) -> float | None:
+    """Quota di giornate residue in cui il giocatore risulta disponibile.
+
+    ``None`` quando il residuo non è calcolabile: in quel caso non si stima nulla.
+    """
+    remaining = [value for value in round_dates if value >= as_of]
+    if not remaining:
+        return None
+    if missed_rounds is not None:
+        missed = min(missed_rounds, len(remaining))
+    elif return_date is not None:
+        missed = sum(1 for value in remaining if value < return_date)
+    else:
+        return None
+    return (len(remaining) - missed) / len(remaining)
+
+
+def _absence_explanation(absence: dict[str, Any] | None) -> str:
+    if absence is None:
+        return ""
+    share = absence["available_share"]
+    window = absence.get("return_label") or "rientro da verificare"
+    if share is None:
+        return f"; {absence['category']} dichiarato ({window}), durata non stimabile"
+    return (
+        f"; {absence['category']} dichiarato ({window}): "
+        f"disponibile sul {share:.0%} delle giornate residue"
+    )
+
+
+def _editorial_absences(
+    connection: duckdb.DuckDBPyConnection, target_season: str, as_of: date
+) -> dict[int, dict[str, Any]]:
+    """Indisponibilità editoriali correnti, con quota di disponibilità residua."""
+    rows = connection.execute(
+        """
+        SELECT fantacalcio_id, category, note, return_label, return_date, observed_at
+        FROM editorial_availability
+        WHERE season = ? AND match_status = 'matched' AND fantacalcio_id IS NOT NULL
+          AND category IN ('infortunio', 'squalifica')
+          AND (return_date IS NULL OR return_date > ?)
+        QUALIFY row_number() OVER (
+          PARTITION BY fantacalcio_id ORDER BY observed_at DESC, return_date DESC
+        ) = 1
+        """,
+        [target_season, as_of],
+    ).fetchall()
+    if not rows:
+        return {}
+    round_dates = _season_round_dates(connection, target_season)
+    absences: dict[int, dict[str, Any]] = {}
+    for fantacalcio_id, category, note, return_label, return_date, _observed in rows:
+        # Una squalifica senza durata dichiarata vale al massimo una giornata; un
+        # infortunio senza finestra resta esplicitamente da verificare.
+        missed_rounds = 1 if category == "squalifica" and return_date is None else None
+        absences[int(fantacalcio_id)] = {
+            "category": str(category),
+            "note": note,
+            "return_label": return_label,
+            "return_date": return_date,
+            "available_share": _available_share(
+                round_dates, as_of, return_date, missed_rounds
+            ),
+        }
+    return absences
+
+
 def _current_context(
     connection: duckdb.DuckDBPyConnection, target_season: str, as_of: date
 ) -> tuple[dict[int, dict[str, Any]], set[int]]:
@@ -386,6 +475,7 @@ def train_and_project(
     as_of = as_of or date.today()
     scoring = scoring or ScoringConfig()
     overrides, injured_players = _current_context(connection, target_season, as_of)
+    editorial_absences = _editorial_absences(connection, target_season, as_of)
     target_start = int(target_season.split("/", maxsplit=1)[0])
     api = _api_features(connection)
     examples = build_examples(connection, system)
@@ -591,7 +681,17 @@ def train_and_project(
                 baseline_score *= 1.0 + float(override.get("risk_modifier") or 0.0)
                 baseline_score *= 1.05 if override.get("penalty_rank") == 1 else 1.0
                 baseline_score *= 1.02 if override.get("set_piece_rank") == 1 else 1.0
-            if player_id in injured_players:
+            absence = editorial_absences.get(player_id)
+            available_share = absence["available_share"] if absence else None
+            if available_share is not None:
+                # L'assenza dichiarata vale in proporzione alle giornate residue: un
+                # lungo stop pesa più di un forfait di giornata. Il pavimento evita di
+                # azzerare giocatori che rientrano comunque in stagione.
+                factor = max(0.15, float(available_share))
+                baseline_score *= factor
+                expected_start_share *= factor
+                expected_minutes *= factor
+            elif absence is not None or player_id in injured_players:
                 baseline_score *= 0.90
                 expected_start_share *= 0.75
                 expected_minutes *= 0.90
@@ -608,7 +708,7 @@ def train_and_project(
             has_api = float(row.get("prev_minutes", 0.0)) > 0
             reliability = 35 + min(seasons_seen, 4) * 12 + (10 if has_api else 0)
             reliability -= 10 if row["role_changed"] else 0
-            reliability -= 15 if player_id in injured_players else 0
+            reliability -= 15 if player_id in injured_players or absence else 0
             reliability += 5 if override else 0
             reliability += 8 if availability is not None else 0
             reliability = max(10, min(100, reliability))
@@ -630,6 +730,7 @@ def train_and_project(
                 )
                 + ("; statistiche API collegate" if has_api else "; API non ancora collegata")
                 + ("; infortunio corrente" if player_id in injured_players else "")
+                + _absence_explanation(absence)
                 + (f"; override: {override.get('source')}" if override else "")
                 + availability_explanation
             )

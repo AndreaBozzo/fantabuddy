@@ -48,7 +48,7 @@ main{position:relative;width:100%;min-width:0;max-width:1580px;margin:auto;paddi
 <section class="section" id="overview"><div class="section-head"><div><div class="eyebrow">Quadro d'insieme</div><h2>Il mercato in cinque numeri</h2></div><p>I crediti sono allocati sulla profondità attesa dell'asta e riconciliano esattamente il budget complessivo della lega.</p></div>
 <div class="kpis"><div class="kpi"><div class="kpi-label">Calciatori attivi</div><strong>{{ player_count }}</strong><small>{{ listone_ceduti }} fuori lista</small></div><div class="kpi"><div class="kpi-label">Profondità d'asta attesa</div><strong>{{ rosterable_count }}</strong><small>{{ config.teams }} rose · {{ roster_size }} slot ciascuna</small></div><div class="kpi"><div class="kpi-label">Budget mercato modellato</div><strong class="accent">{{ total_budget }}</strong><small>{{ budget_per_team }} crediti per squadra</small></div><div class="kpi"><div class="kpi-label">Copertura API attiva</div><strong>{{ mapped_count }}/{{ player_count }}</strong><small>{{ squad_confirmed_count }} confermati nelle rose</small></div><div class="kpi"><div class="kpi-label">Forecast fixture</div><strong>{{ fixture_forecast_count }}</strong><small>{{ forecast_coverage }}% del catalogo</small></div></div></section>
 
-<section class="section" id="league-rules"><div class="section-head"><div><div class="eyebrow">Profilo di lega · {{ system_label }}</div><h2>{{ config.name }}</h2></div><p>{{ config.rules_source or "Configurazione di lega" }}</p></div><div class="league-grid"><article class="panel"><h3>Regole e parametri d'asta</h3><div class="rule-grid"><div class="rule"><b>{{ config.teams }} × {{ config.budget }}</b><small>squadre × crediti</small></div><div class="rule"><b>{{ roster_size }}</b><small>{{ roster_description }}</small></div><div class="rule"><b>{{ config.auction.min_bid }} cr.</b><small>base d'asta · {% if config.auction.random_by_role is sameas true %}chiamate casuali per ruolo{% elif config.auction.random_by_role is sameas false %}ordine non casuale{% else %}ordine chiamate non specificato{% endif %}</small></div><div class="rule"><b>{{ config.goal_bands.first_goal }} / +{{ config.goal_bands.step }}</b><small>prima fascia gol / scatto</small></div><div class="rule"><b>{{ config.lineup.substitutions }} cambi</b><small>{% if config.lineup.max_bench_players is not none %}panchina fino a {{ config.lineup.max_bench_players }}{% else %}panchina non specificata{% endif %} · {% if config.lineup.captain is sameas true %}capitano sì{% elif config.lineup.captain is sameas false %}capitano no{% else %}capitano non specificato{% endif %}</small></div><div class="rule"><b>{{ config.auction.repair_release_slots if config.auction.repair_release_slots is not none else "—" }}</b><small>{% if config.auction.repair_release_slots is not none %}slot ordinari al mercato di riparazione{% else %}svincoli non specificati{% endif %}</small></div></div><div class="budget-split">{% for group in budget_groups %}<div class="budget-role"><b>{{ pct(group.share) }}</b><small>{{ group.label }}</small></div>{% endfor %}</div>{% if config.strategy_notes %}<ul class="strategy-list">{% for note in config.strategy_notes %}<li>{{ note }}</li>{% endfor %}</ul>{% endif %}</article><article class="panel"><h3>Modificatore e bonus</h3>{% if config.defense_modifier.enabled %}<p class="panel-lead">Media di {% if config.defense_modifier.includes_goalkeeper %}portiere e {% endif %}difesa. Il peso dei reparti nella ripartizione crediti incorpora questa regola; il bonus di squadra non viene attribuito artificialmente al singolo.</p><div class="modifier-bands">{% for band in config.defense_modifier.bands %}<div class="modifier-band"><b>+{{ band.bonus }}</b><small>media ≥ {{ "%.2f"|format(band.min_average) }}</small></div>{% endfor %}</div>{% else %}<p class="panel-lead">Modificatore difesa non attivo o non configurato.</p>{% endif %}<div class="rule-grid"><div class="rule"><b>+{{ config.scoring.clean_sheet }}</b><small>porta inviolata</small></div><div class="rule"><b>+{{ config.scoring.goal }}</b><small>gol segnato</small></div><div class="rule"><b>+{{ config.scoring.assist }}</b><small>assist</small></div><div class="rule"><b>{{ config.scoring.goal_conceded }}</b><small>gol subito</small></div><div class="rule"><b>{{ config.scoring.yellow_card }}</b><small>ammonizione</small></div><div class="rule"><b>{{ config.scoring.red_card }}</b><small>espulsione</small></div></div><p class="panel-lead" style="margin-top:12px">{% if config.auction.long_injury_replacement is sameas true %}Gli infortuni lunghi consentono una sostituzione secondo il regolamento configurato.{% elif config.auction.long_injury_replacement is sameas false %}Gli infortuni lunghi non danno diritto a sostituzione: la disponibilità pesa più del normale.{% else %}La sostituzione per lungo infortunio non è specificata: verificare il regolamento prima dell'asta.{% endif %}</p></article></div></section>
+<section class="section" id="league-rules"><div class="section-head"><div><div class="eyebrow">Profilo di lega · {{ system_label }}</div><h2>{{ config.name }}</h2></div><p>{{ config.rules_source or "Configurazione di lega" }}</p></div><div class="league-grid"><article class="panel"><h3>Regole e parametri d'asta</h3><div class="rule-grid"><div class="rule"><b>{{ config.teams }} × {{ config.budget }}</b><small>squadre × crediti</small></div><div class="rule"><b>{{ roster_size }}</b><small>{{ roster_description }}</small></div><div class="rule"><b>{{ config.auction.min_bid }} cr.</b><small>base d'asta · {% if config.auction.random_by_role is sameas true %}chiamate casuali per ruolo{% elif config.auction.random_by_role is sameas false %}ordine non casuale{% else %}ordine chiamate non specificato{% endif %}</small></div><div class="rule"><b>{{ config.goal_bands.first_goal }} / +{{ config.goal_bands.step }}</b><small>prima fascia gol / scatto</small></div><div class="rule"><b>{{ config.lineup.substitutions }} cambi</b><small>{% if config.lineup.max_bench_players is not none %}panchina fino a {{ config.lineup.max_bench_players }}{% else %}panchina non specificata{% endif %} · {% if config.lineup.captain is sameas true %}capitano sì{% elif config.lineup.captain is sameas false %}capitano no{% else %}capitano non specificato{% endif %}</small></div><div class="rule"><b>{{ config.auction.repair_release_slots if config.auction.repair_release_slots is not none else "—" }}</b><small>{% if config.auction.repair_release_slots is not none %}slot ordinari al mercato di riparazione{% else %}svincoli non specificati{% endif %}</small></div></div><div class="budget-split">{% for group in budget_groups %}<div class="budget-role"><b>{{ pct(group.share) }}</b><small>{{ group.label }}</small></div>{% endfor %}</div>{% if config.strategy_notes %}<ul class="strategy-list">{% for note in config.strategy_notes %}<li>{{ note }}</li>{% endfor %}</ul>{% endif %}</article><article class="panel"><h3>Modificatore e bonus</h3>{% if config.defense_modifier.enabled %}<p class="panel-lead">Media di {% if config.defense_modifier.includes_goalkeeper %}portiere e {% endif %}difesa. Il peso dei reparti nella ripartizione crediti incorpora questa regola; il bonus di squadra non viene attribuito artificialmente al singolo.</p>{% if not config.defense_modifier.bands %}<p class="panel-lead">Modificatore attivo; fasce e bonus non specificati nel regolamento.</p>{% endif %}<div class="modifier-bands">{% for band in config.defense_modifier.bands %}<div class="modifier-band"><b>+{{ band.bonus }}</b><small>media ≥ {{ "%.2f"|format(band.min_average) }}</small></div>{% endfor %}</div>{% else %}<p class="panel-lead">Modificatore difesa non attivo o non configurato.</p>{% endif %}<div class="rule-grid"><div class="rule"><b>+{{ config.scoring.clean_sheet }}</b><small>porta inviolata</small></div><div class="rule"><b>+{{ config.scoring.goal }}</b><small>gol segnato</small></div><div class="rule"><b>+{{ config.scoring.assist }}</b><small>assist</small></div><div class="rule"><b>{{ config.scoring.goal_conceded if config.scoring.goal_conceded is not none else "Non specificato" }}</b><small>gol subito</small></div><div class="rule"><b>{{ config.scoring.yellow_card }}</b><small>ammonizione</small></div><div class="rule"><b>{{ config.scoring.red_card }}</b><small>espulsione</small></div><div class="rule"><b>{{ config.scoring.own_goal }} / {{ config.scoring.goalkeeper_own_goal if config.scoring.goalkeeper_own_goal is not none else config.scoring.own_goal }}</b><small>autogol movimento / portiere</small></div><div class="rule"><b>+{{ config.scoring.penalty_saved }}</b><small>rigore parato</small></div><div class="rule"><b>{{ config.scoring.penalty_missed if config.scoring.penalty_missed is not none else "Non specificato" }}</b><small>rigore sbagliato</small></div></div><p class="panel-lead" style="margin-top:12px">{% if config.auction.long_injury_replacement is sameas true %}Gli infortuni lunghi consentono una sostituzione secondo il regolamento configurato.{% elif config.auction.long_injury_replacement is sameas false %}Gli infortuni lunghi non danno diritto a sostituzione: la disponibilità pesa più del normale.{% else %}La sostituzione per lungo infortunio non è specificata: verificare il regolamento prima dell'asta.{% endif %}</p></article></div></section>
 
 <section class="section" id="roles"><div class="section-head"><div><div class="eyebrow">Gerarchie</div><h2>Prime scelte per ruolo</h2></div><p>I tre profili con più crediti consigliati in ciascun reparto, limitati alla profondità d'asta attesa.</p></div><div class="role-grid">{% for role, players in role_leaders.items() %}<article class="role-card"><div class="role-title"><strong>{{ role_names[role] }}</strong><span class="role-mark role-{{ role }}">{{ role }}</span></div>{% for p in players %}<div class="player-line"><div><b>{{ p.name }}</b><small>{{ p.team }} · {{ p.tier }} · tit. {{ pct(p.expected_start_share) }}</small></div><div class="amount">{{ p.suggested_credits }}<small>crediti</small></div></div>{% endfor %}</article>{% endfor %}</div></section>
 
@@ -57,9 +57,9 @@ main{position:relative;width:100%;min-width:0;max-width:1580px;margin:auto;paddi
 <article class="panel"><h3>Trasferimenti recenti</h3><p class="panel-lead">Ultimo movimento in entrata negli ultimi 30 giorni, verificato contro la squadra del listone.</p><div class="signal-list">{% for p in recent_transfers[:8] %}<div class="signal"><div><b>{{ p.name }} <span class="tag tag-transfer">{{ p.transfer_type }}</span></b><small>{{ p.team_out_name }} → {{ p.team }}</small></div><div class="signal-value">{{ p.suggested_credits }} cr.<small>{{ p.transfer_date }}</small></div></div>{% else %}<div class="empty">Nessun trasferimento recente collegato.</div>{% endfor %}</div></article>
 </div></section>
 
-<section class="section" id="availability"><article class="panel availability-panel"><div class="availability-head"><div><div class="eyebrow">Controllo pre-asta</div><h2>Disponibilità giocatori</h2><p class="panel-lead">Segnali provider, non diagnosi editoriali. I report partita indicano quando il giocatore è stato segnalato assente; non rappresentano la data d'inizio dell'infortunio. Prima il pool d'asta e i rientri datati, poi il valore consigliato.</p></div><div class="alert-summary" aria-label="Riepilogo disponibilità"><div class="alert-stat"><b>{{ injury_count }}</b>giocatori</div><div class="alert-stat alert-stat-danger"><b>{{ injury_unknown_count }}</b>rientri da verificare</div><div class="alert-stat"><b>{{ injury_rosterable_count }}</b>nel pool d'asta</div></div></div>
+<section class="section" id="availability"><article class="panel availability-panel"><div class="availability-head"><div><div class="eyebrow">Controllo pre-asta</div><h2>Disponibilità giocatori</h2><p class="panel-lead">Fonte primaria: la redazione ufficiale Fantacalcio, integrata dai segnali API quando presenti. Le finestre di rientro sono stime redazionali, non date certe: quando il testo non dichiara un mese il rientro resta da verificare. I crediti consigliati sono già ridotti in proporzione alle giornate di assenza stimate. Prima il pool d'asta e i rientri datati, poi il valore consigliato.</p></div><div class="alert-summary" aria-label="Riepilogo disponibilità"><div class="alert-stat"><b>{{ injury_count }}</b>giocatori</div><div class="alert-stat alert-stat-danger"><b>{{ injury_unknown_count }}</b>rientri da verificare</div><div class="alert-stat"><b>{{ injury_rosterable_count }}</b>nel pool d'asta</div></div></div>
 <div class="availability-filters" aria-label="Filtri disponibilità"><label class="sr-only" for="availabilitySearch">Cerca giocatore o squadra</label><input id="availabilitySearch" placeholder="Cerca giocatore, squadra o motivo"><label class="sr-only" for="availabilityRole">Ruolo</label><select id="availabilityRole"><option value="">Tutti i ruoli</option>{% for role in roles %}<option>{{ role }}</option>{% endfor %}</select><label class="sr-only" for="availabilityCategory">Tipo di segnale</label><select id="availabilityCategory"><option value="">Tutti i motivi</option>{% for category in availability_categories %}<option>{{ category }}</option>{% endfor %}</select><label class="sr-only" for="availabilityReturn">Stato rientro</label><select id="availabilityReturn"><option value="">Qualsiasi rientro</option><option value="unknown">Da verificare</option><option value="dated">Data indicata</option></select><button id="availabilityReset" type="button">Azzera</button></div>
-<div class="availability-list" id="availabilityList">{% for p in availability_alerts %}<article class="availability-row" data-role="{{ p.role }}" data-category="{{ p.category }}" data-return="{{ p.return_status }}" data-team="{{ p.team }}"><div class="availability-player"><span class="role-mark role-{{ p.role }}" aria-hidden="true">{{ p.role }}</span><div><b>{{ p.name }}</b><small>{{ p.team }} · fascia {{ p.tier }}</small></div></div><div class="availability-detail"><b title="{{ p.detail }}">{{ p.detail }}</b><small>{{ p.category }} · {{ p.source_label }} · {{ p.signal_count }} {{ 'segnale' if p.signal_count == 1 else 'segnali' }}</small>{% if p.signal_count %}<details><summary>Contesto provider</summary><div class="provider-signals">{% for signal in p.signals %}<small><b>{{ signal.detail }}</b> · {{ signal.context }}<br>{{ signal.source_label }} · osservato {{ signal.observed_at }}</small>{% endfor %}</div></details>{% endif %}</div><div class="availability-return {{ p.return_status }}"><b>{{ p.return_label }}</b><small>{% if p.period_label %}{{ p.period_label }}{% else %}Nessun periodo di recupero disponibile{% endif %}</small></div><div class="availability-value"><b>{{ p.suggested_credits }} cr.</b><small>Titolarità attesa {{ pct(p.expected_start_share) }}</small></div></article>{% else %}<div class="empty">Nessun alert aperto alla data dello snapshot.</div>{% endfor %}<div class="empty availability-empty" id="availabilityEmpty">Nessun giocatore corrisponde ai filtri.</div></div>
+<div class="availability-list" id="availabilityList">{% for p in availability_alerts %}<article class="availability-row" data-role="{{ p.role }}" data-category="{{ p.category }}" data-return="{{ p.return_status }}" data-team="{{ p.team }}"><div class="availability-player"><span class="role-mark role-{{ p.role }}" aria-hidden="true">{{ p.role }}</span><div><b>{{ p.name }}</b><small>{{ p.team }} · fascia {{ p.tier }}</small></div></div><div class="availability-detail"><b title="{{ p.detail }}">{{ p.detail }}</b><small>{{ p.category }} · {{ p.source_label }} · {{ p.signal_count }} {{ 'segnale' if p.signal_count == 1 else 'segnali' }}</small>{% if p.signal_count %}<details><summary>Dettaglio e fonti</summary><div class="provider-signals">{% for signal in p.signals %}<small><b>{{ signal.detail }}</b> · {{ signal.context }}<br>{{ signal.source_label }} · osservato {{ signal.observed_at }}</small>{% endfor %}</div></details>{% endif %}</div><div class="availability-return {{ p.return_status }}"><b>{{ p.return_label }}</b><small>{% if p.period_label %}{{ p.period_label }}{% else %}Nessun periodo di recupero disponibile{% endif %}</small></div><div class="availability-value"><b>{{ p.suggested_credits }} cr.</b><small>Titolarità attesa {{ pct(p.expected_start_share) }}</small></div></article>{% else %}<div class="empty">Nessun alert aperto alla data dello snapshot.</div>{% endfor %}<div class="empty availability-empty" id="availabilityEmpty">Nessun giocatore corrisponde ai filtri.</div></div>
 {% if availability_alerts %}<div class="availability-more"><span class="availability-count" id="availabilityCount" aria-live="polite"></span><button id="availabilityToggle" type="button" aria-expanded="false" aria-controls="availabilityList">Mostra tutti</button></div>{% endif %}</article></section>
 
 <section class="section" id="changes"><div class="section-head"><div><div class="eyebrow">Delta snapshot</div><h2>Cosa è cambiato nel listone</h2></div><p>Confronto sui fatti osservabili del listone ufficiale: ingressi, cambi di squadra o ruolo e uscite. I prezzi modello non vengono confrontati quando cambia la configurazione della lega.</p></div><div class="insight-grid"><article class="panel"><div class="change-strip"><div class="change-stat new"><strong>{{ change_summary.new }}</strong>nuovi</div><div class="change-stat updated"><strong>{{ change_summary.updated }}</strong>aggiornati</div><div class="change-stat out"><strong>{{ change_summary.removed }}</strong>usciti</div></div><h3>Nuovi ingressi</h3><p class="panel-lead">Ordinati per FVM ufficiale: sono i nomi da ricontestualizzare prima dell'asta.</p><div class="signal-list">{% for p in new_players %}<div class="signal"><div><b>{{ p.name }} <span class="tag tag-new">nuovo</span></b><small>{{ p.team }} · {{ p.role }}</small></div><div class="signal-value">Q {{ p.new_quote or 0 }}<small>FVM {{ p.new_fvm or 0 }}</small></div></div>{% else %}<div class="empty">Nessun nuovo ingresso nel listone.</div>{% endfor %}</div></article><article class="panel"><h3>Contesto cambiato</h3><p class="panel-lead">Trasferimenti, cambi di ruolo o variazioni delle valutazioni ufficiali.</p><div class="signal-list">{% for p in updated_players %}<div class="signal"><div><b>{{ p.name }} <span class="tag tag-check">aggiornato</span></b><small>{{ p.change_context }}</small></div><div class="signal-value">Q {{ p.new_quote }}<small>FVM {{ p.new_fvm }}</small></div></div>{% else %}<div class="empty">Nessun cambio di squadra, ruolo o valutazione ufficiale.</div>{% endfor %}</div></article><article class="panel"><h3>Fuori dal listone</h3><p class="panel-lead">Profili da eliminare da shortlist e piani di rosa.</p><div class="signal-list">{% for p in removed_players %}<div class="signal"><div><b>{{ p.name }} <span class="tag tag-alert">uscito</span></b><small>Ultimo contesto: {{ p.old_team }} · {{ p.old_role }}</small></div><div class="signal-value">Q {{ p.old_quote or 0 }}<small>FVM {{ p.old_fvm or 0 }}</small></div></div>{% else %}<div class="empty">Nessuna uscita dal listone.</div>{% endfor %}</div></article></div></section>
@@ -67,7 +67,7 @@ main{position:relative;width:100%;min-width:0;max-width:1580px;margin:auto;paddi
 <section class="section" id="ranking-section"><article class="panel ranking-panel" id="rankingPanel"><div class="ranking-head"><div><div class="eyebrow">Strumento d'asta · {{ system_label }}</div><h2>Ranking completo</h2><p class="panel-lead"><b>Crediti</b> è il valore di mercato prodotto dal modello sul budget della lega: usalo come riferimento comparativo, non come tetto personale automatico. Le fasce vanno da S (top 10% del pool d'asta) a D nel pool atteso; E raccoglie il resto del listone. Δ FVM misura il disaccordo col mercato ufficiale {{ system_label }}.</p></div><div class="ranking-actions"><button class="view-toggle" id="viewToggle" type="button" aria-pressed="false" aria-controls="ranking">Vista compatta</button></div></div><div class="filters" aria-label="Filtri ranking"><input id="search" aria-label="Cerca giocatore o squadra" placeholder="Cerca giocatore o squadra"><select id="role" aria-label="Ruolo"><option value="">Tutti i ruoli</option>{% for role in roles %}<option>{{ role }}</option>{% endfor %}</select><select id="tier" aria-label="Fascia"><option value="">Tutte le fasce</option><option value="S">S · top 10%</option><option value="A">A · top 30%</option><option value="B">B · top 60%</option><option value="C">C · top 85%</option><option value="D">D · fine pool</option><option value="E">E · fuori pool</option></select><select id="team" aria-label="Squadra"><option value="">Tutte le squadre</option></select><select id="signal" aria-label="Segnale"><option value="">Tutti i segnali</option><option value="favorite">Solo preferiti</option><option value="starter">Titolarità ≥65%</option><option value="low-reliability">Affidabilità &lt;60%</option><option value="return-unknown">Rientro da verificare</option><option value="new">Nuovi</option><option value="transfer">Trasferimenti recenti</option><option value="alert">Alert disponibilità</option><option value="squad-check">Rosa API da verificare</option></select><input id="maxCredits" type="number" min="{{ config.auction.min_bid }}" aria-label="Crediti massimi" placeholder="Crediti max"><label class="check"><input id="rosterable" type="checkbox"> Solo pool atteso</label><button id="reset" type="button">Azzera filtri</button><span class="result-count" id="resultCount" aria-live="polite"></span></div>
 <div class="table-hint" id="tableHint">Scorri orizzontalmente per confrontare più dati. Usa “Più dati” per aprire tutte le colonne.</div><div class="table-wrap" tabindex="0" aria-label="Ranking scorrevole"><table id="ranking"><caption class="sr-only">Ranking giocatori per l'asta {{ config.name }}</caption><thead><tr><th scope="col" data-key="role">R</th><th scope="col" data-key="name">Nome</th><th scope="col" data-key="team">Squadra</th><th scope="col" data-key="tier">Fascia</th><th scope="col" data-key="suggested_credits">Crediti</th><th scope="col" class="optional-col" data-key="official_fvm" title="Fantacalcio Value Market / 1000">FVM</th><th scope="col" class="optional-col" data-key="fvm_delta" title="Crediti consigliati meno FVM/1000">Δ FVM</th><th scope="col" class="optional-col" data-key="official_quote">Qt.</th><th scope="col" class="optional-col" data-key="projected_score">Score</th><th scope="col" data-key="expected_start_share">Tit.%</th><th scope="col" class="optional-col" data-key="expected_minutes">Min</th><th scope="col" class="optional-col" data-key="expected_goals">Gol</th><th scope="col" class="optional-col" data-key="expected_assists">Assist</th><th scope="col" class="optional-col" data-key="reliability">Affid.</th><th scope="col" class="optional-col">Perché</th></tr></thead><tbody></tbody></table></div></article></section>
 
-<section class="section" id="method"><div class="section-head"><div><div class="eyebrow">Trasparenza</div><h2>Metodo, copertura e freschezza</h2></div><p>Ogni modello può entrare soltanto dopo aver battuto una baseline temporale; le fonti dichiarano quando sono state osservate.</p></div><div class="method-grid"><article class="panel"><h3>Validazione modelli</h3><div class="compact-table"><table><thead><tr><th>Modello</th><th>Train</th><th>Valid.</th><th>Errore base</th><th>Errore ML</th><th>ρ base</th><th>ρ ML</th><th>Gate</th></tr></thead><tbody>{% for m in metrics %}<tr><td>{{ m.role }}</td><td>{{ m.train_count }}</td><td>{{ m.validation_count }}</td><td>{{ fmt(m.baseline_mae) }}</td><td>{{ fmt(m.ml_mae) }}</td><td>{{ fmt(m.baseline_spearman) }}</td><td>{{ fmt(m.ml_spearman) }}</td><td class="gate {{ 'gate-on' if m.use_ml else 'gate-off' }}">{{ 'ML' if m.use_ml else 'baseline' }}</td></tr>{% endfor %}</tbody></table></div><p class="panel-lead">P/D/C/A: performance stagionale con backtest walk-forward. START: Brier score della titolarità; MIN: MAE dei minuti per gara.</p></article><article class="panel"><h3>Copertura dati</h3><div class="freshness"><div class="fresh-row"><span>Mapping attivi accettati</span><b>{{ mapped_count }}/{{ player_count }}</b></div><div class="fresh-row"><span>Decisioni mapping complete</span><b>{{ mapping_decision_count }}/{{ player_count }}</b></div><div class="fresh-row"><span>Confermati in rosa API</span><b>{{ squad_confirmed_count }}</b></div><div class="fresh-row"><span>Forecast da storico fixture</span><b>{{ fixture_forecast_count }}</b></div><div class="fresh-row"><span>Override editoriali attivi</span><b>{{ override_count }}</b></div><div class="fresh-row"><span>Alert disponibilità</span><b>{{ injury_count }}</b></div><div class="fresh-row"><span>Statistiche aggregate {{ season }}</span><b>{{ current_stats_rows }}</b></div></div></article></div><div class="method-grid" style="margin-top:12px"><article class="panel"><h3>Freschezza delle fonti</h3><div class="freshness">{% for item in freshness %}<div class="fresh-row"><span>{{ item.label }}<small style="display:block">{{ item.detail }}</small></span><b>{{ item.updated }}</b></div>{% endfor %}</div></article><article class="panel"><h3>Note di lettura</h3><p>Il rating del provider non è un voto ufficiale Fantacalcio. FVM e quotazioni sono riferimenti di mercato, non prezzi direttamente spendibili. La colonna <b>Min</b> annualizza i minuti attesi per gara su 38 giornate; gli alert riducono il rischio ma non sostituiscono una verifica editoriale pre-asta.</p><p class="panel-lead">Listone <code>{{ listone_snapshot }}</code><br>Record: {{ listone_records }} · {{ listone_active }} attivi · {{ listone_ceduti }} ceduti · mapping pendenti {{ pending_count }}</p></article></div></section>
+<section class="section" id="method"><div class="section-head"><div><div class="eyebrow">Trasparenza</div><h2>Metodo, copertura e freschezza</h2></div><p>Ogni modello può entrare soltanto dopo aver battuto una baseline temporale; le fonti dichiarano quando sono state osservate.</p></div><div class="method-grid"><article class="panel"><h3>Validazione modelli</h3><div class="compact-table"><table><thead><tr><th>Modello</th><th>Train</th><th>Valid.</th><th>Errore base</th><th>Errore ML</th><th>ρ base</th><th>ρ ML</th><th>Gate</th></tr></thead><tbody>{% for m in metrics %}<tr><td>{{ m.role }}</td><td>{{ m.train_count }}</td><td>{{ m.validation_count }}</td><td>{{ fmt(m.baseline_mae) }}</td><td>{{ fmt(m.ml_mae) }}</td><td>{{ fmt(m.baseline_spearman) }}</td><td>{{ fmt(m.ml_spearman) }}</td><td class="gate {{ 'gate-on' if m.use_ml else 'gate-off' }}">{{ 'ML' if m.use_ml else 'baseline' }}</td></tr>{% endfor %}</tbody></table></div><p class="panel-lead">P/D/C/A: performance stagionale con backtest walk-forward. START: Brier score della titolarità; MIN: MAE dei minuti per gara.</p></article><article class="panel"><h3>Copertura dati</h3><div class="freshness"><div class="fresh-row"><span>Mapping attivi accettati</span><b>{{ mapped_count }}/{{ player_count }}</b></div><div class="fresh-row"><span>Decisioni mapping complete</span><b>{{ mapping_decision_count }}/{{ player_count }}</b></div><div class="fresh-row"><span>Confermati in rosa API</span><b>{{ squad_confirmed_count }}</b></div><div class="fresh-row"><span>Forecast da storico fixture</span><b>{{ fixture_forecast_count }}</b></div><div class="fresh-row"><span>Override editoriali attivi</span><b>{{ override_count }}</b></div><div class="fresh-row"><span>Alert disponibilità</span><b>{{ injury_count }}</b></div><div class="fresh-row"><span>Statistiche aggregate {{ season }}</span><b>{{ current_stats_rows }}</b></div></div></article></div><div class="method-grid" style="margin-top:12px"><article class="panel"><h3>Freschezza delle fonti</h3><div class="freshness">{% for item in freshness %}<div class="fresh-row"><span>{{ item.label }}<small style="display:block">{{ item.detail }}</small></span><b>{{ item.updated }}</b></div>{% endfor %}</div></article><article class="panel"><h3>Note di lettura</h3><p>Il rating del provider non è un voto ufficiale Fantacalcio. FVM e quotazioni sono riferimenti di mercato, non prezzi direttamente spendibili. La colonna <b>Min</b> annualizza i minuti attesi per gara su 38 giornate; gli alert riducono il prezzo in proporzione alle giornate stimate di assenza, ma non sostituiscono una verifica pre-asta.</p><p class="panel-lead">Listone <code>{{ listone_snapshot }}</code><br>Record: {{ listone_records }} · {{ listone_active }} attivi · {{ listone_ceduti }} ceduti · mapping pendenti {{ pending_count }}</p></article></div></section>
 <footer class="footer"><span>Fantabuddy · report autonomo e riproducibile</span><span>{{ build_id }}</span></footer>
 </main>
 <script>
@@ -226,6 +226,19 @@ def _availability_category(detail: object) -> str:
     return "Altro"
 
 
+_DECLARED_CATEGORIES = {
+    "infortunio": "Infortunio",
+    "squalifica": "Squalifica",
+    "diffida": "Diffida",
+}
+
+_SOURCE_LABELS = {
+    "editorial": "Redazione ufficiale Fantacalcio",
+    "injury_fixture": "Report disponibilità partita",
+    "sidelined": "Storico indisponibilità",
+}
+
+
 def _availability_alerts(
     connection: duckdb.DuckDBPyConnection,
     build_id: str,
@@ -247,7 +260,8 @@ def _availability_alerts(
                      i.updated_at AS observed_at,
                      CASE WHEN f.fixture_id IS NOT NULL
                        THEN f.home_team_name || ' – ' || f.away_team_name
-                       ELSE NULL END AS fixture
+                       ELSE NULL END AS fixture,
+                     NULL::VARCHAR AS declared_category
               FROM provider_player_mappings m
               JOIN api_injuries i USING (api_player_id)
               LEFT JOIN api_fixtures f USING (fixture_id)
@@ -257,7 +271,7 @@ def _availability_alerts(
               UNION ALL
               SELECT m.fantacalcio_id, 'sidelined',
                      coalesce(nullif(s.sidelined_type, ''), 'Indisponibile'),
-                     s.start_date, s.start_date, s.end_date, s.observed_at, NULL
+                     s.start_date, s.start_date, s.end_date, s.observed_at, NULL, NULL
               FROM provider_player_mappings m
               JOIN api_player_sidelined s USING (api_player_id)
               WHERE m.season = ? AND m.status = 'accepted'
@@ -267,11 +281,25 @@ def _availability_alerts(
                   OR (s.end_date IS NULL
                       AND s.start_date >= CAST(? AS DATE) - INTERVAL 180 DAY)
                 )
+              UNION ALL
+              SELECT e.fantacalcio_id, 'editorial',
+                     coalesce(nullif(e.note, ''), e.category),
+                     NULL::DATE, NULL::DATE, e.return_date, e.observed_at, NULL, e.category
+              FROM editorial_availability e
+              WHERE e.season = ? AND e.match_status = 'matched'
+                AND e.fantacalcio_id IS NOT NULL
+                AND e.category IN ('infortunio', 'squalifica')
+                AND (e.return_date IS NULL OR e.return_date > CAST(? AS DATE))
+                AND e.snapshot_id = (
+                  SELECT snapshot_id FROM editorial_availability
+                  WHERE season = e.season
+                  QUALIFY row_number() OVER (ORDER BY observed_at DESC, snapshot_id) = 1
+                )
             )
             SELECT a.fantacalcio_id, a.name, a.team, a.role, a.suggested_credits,
                    a.expected_start_share, a.rosterable, a.tier,
                    s.source, s.detail, s.signal_date, s.start_date, s.end_date,
-                   s.observed_at, s.fixture
+                   s.observed_at, s.fixture, s.declared_category
             FROM signals s
             JOIN auction_values a USING (fantacalcio_id)
             WHERE a.build_id = ?
@@ -285,6 +313,8 @@ def _availability_alerts(
                 season,
                 as_of,
                 as_of,
+                as_of,
+                season,
                 as_of,
                 build_id,
             ],
@@ -313,7 +343,13 @@ def _availability_alerts(
         raw_signal_date = signal["signal_date"]
         raw_start_date = signal["start_date"]
         raw_end_date = signal["end_date"]
-        if signal["source"] == "injury_fixture":
+        if signal["source"] == "editorial":
+            context = (
+                f"Rientro stimato dalla redazione: {_format_date(raw_end_date)}"
+                if raw_end_date is not None
+                else "Nessuna finestra di rientro dichiarata"
+            )
+        elif signal["source"] == "injury_fixture":
             context = f"Segnalato per la partita del {_format_date(raw_signal_date)}"
             if signal["fixture"]:
                 context += f" · {signal['fixture']}"
@@ -324,31 +360,42 @@ def _availability_alerts(
         player["signals"].append(
             {
                 "source": signal["source"],
-                "source_label": (
-                    "Report disponibilità partita"
-                    if signal["source"] == "injury_fixture"
-                    else "Storico indisponibilità"
-                ),
+                "source_label": _SOURCE_LABELS[str(signal["source"])],
                 "detail": signal["detail"],
                 "context": context,
                 "observed_at": _format_date(signal["observed_at"]),
                 "raw_signal_date": raw_signal_date,
                 "raw_start_date": raw_start_date,
                 "raw_end_date": raw_end_date,
+                "declared_category": signal["declared_category"],
             }
         )
 
     rows: list[dict[str, Any]] = []
     for player in grouped.values():
         player_signals = player["signals"]
-        injury_signals = [s for s in player_signals if s["source"] == "injury_fixture"]
-        sidelined_signals = [s for s in player_signals if s["source"] == "sidelined"]
-        primary = injury_signals[0] if injury_signals else sidelined_signals[0]
+        by_source = {
+            source: [s for s in player_signals if s["source"] == source]
+            for source in _SOURCE_LABELS
+        }
+        editorial_signals = by_source["editorial"]
+        sidelined_signals = by_source["sidelined"]
+        # La redazione ufficiale è la fonte più fresca: quando parla, guida la scheda.
+        primary = next(
+            group[0] for group in by_source.values() if group
+        )
         recovery = sidelined_signals[0] if sidelined_signals else None
-        end_date = recovery["raw_end_date"] if recovery else None
+        end_date = (
+            editorial_signals[0]["raw_end_date"]
+            if editorial_signals and editorial_signals[0]["raw_end_date"] is not None
+            else (recovery["raw_end_date"] if recovery else None)
+        )
         start_date = recovery["raw_start_date"] if recovery else None
         player["detail"] = primary["detail"]
-        player["category"] = _availability_category(primary["detail"])
+        # Quando la fonte dichiara già la natura del segnale non la si deduce dal testo.
+        player["category"] = _DECLARED_CATEGORIES.get(
+            str(primary["declared_category"]), ""
+        ) or _availability_category(primary["detail"])
         player["return_status"] = "dated" if end_date is not None else "unknown"
         player["return_label"] = (
             f"Rientro indicato: {_format_date(end_date)}"
@@ -358,16 +405,16 @@ def _availability_alerts(
         player["period_label"] = (
             f"Indisponibile dal {_format_date(start_date)}" if start_date is not None else None
         )
+        source_count = sum(1 for group in by_source.values() if group)
         player["source_label"] = (
-            "2 fonti provider"
-            if injury_signals and sidelined_signals
-            else primary["source_label"]
+            f"{source_count} fonti" if source_count > 1 else primary["source_label"]
         )
         player["signal_count"] = len(player_signals)
         for item in player_signals:
             item.pop("raw_signal_date")
             item.pop("raw_start_date")
             item.pop("raw_end_date")
+            item.pop("declared_category")
         rows.append(player)
 
     return sorted(
@@ -449,11 +496,30 @@ def _freshness_rows(
         "SELECT max(updated_at), count(*) FROM api_fixtures WHERE season_start = ?",
         [season_start],
     ).fetchone()
+    editorial = connection.execute(
+        """
+        SELECT max(observed_at), count(*),
+               count(*) FILTER (WHERE return_date IS NOT NULL)
+        FROM editorial_availability
+        WHERE snapshot_id = (
+          SELECT snapshot_id FROM editorial_availability
+          QUALIFY row_number() OVER (ORDER BY observed_at DESC, snapshot_id) = 1
+        )
+        """
+    ).fetchone()
     return [
         {
             "label": "Listone ufficiale",
             "updated": _format_date(listone_updated),
             "detail": f"{listone_records} record nello snapshot",
+        },
+        {
+            "label": "Indisponibili redazione Fantacalcio",
+            "updated": _format_date(editorial[0] if editorial else None),
+            "detail": (
+                f"{int(editorial[1]) if editorial else 0} segnalazioni · "
+                f"{int(editorial[2]) if editorial else 0} con finestra di rientro"
+            ),
         },
         {
             "label": "Rose API-Football",

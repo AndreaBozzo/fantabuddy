@@ -460,6 +460,24 @@ CREATE TABLE IF NOT EXISTS provider_player_mappings (
     PRIMARY KEY (fantacalcio_id, api_player_id, season)
 );
 
+CREATE TABLE IF NOT EXISTS editorial_availability (
+    snapshot_id VARCHAR NOT NULL,
+    season VARCHAR NOT NULL,
+    fantacalcio_id INTEGER,
+    player_name VARCHAR NOT NULL,
+    team_name VARCHAR NOT NULL,
+    team_code VARCHAR,
+    category VARCHAR NOT NULL,
+    note VARCHAR,
+    return_label VARCHAR,
+    return_date DATE,
+    match_status VARCHAR NOT NULL,
+    source_url VARCHAR NOT NULL,
+    source_checksum VARCHAR NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (snapshot_id, team_name, category, player_name)
+);
+
 CREATE TABLE IF NOT EXISTS curated_overrides (
     fantacalcio_id INTEGER NOT NULL,
     season VARCHAR NOT NULL,

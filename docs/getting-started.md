@@ -63,6 +63,15 @@ Copy `config/league.default.yaml` and change only the rules you actually know: n
 teams, budget, roster, role allocation, scoring and auction limits. Unknown administrative
 rules may stay `null`.
 
+If the defense modifier is confirmed but its bonus table is undecided, set
+`defense_modifier.enabled: true` and `bands: []`. The report labels the thresholds as
+unspecified. `scoring.goalkeeper_own_goal` can override the movement-player own-goal
+penalty; omitting it retains the general own-goal value. `goal_conceded` and
+`penalty_missed` may be `null` when the rules do not specify them.
+These settings document the scoring rules. The current individual projection does not
+estimate own goals, clean sheets, penalty saves or a team defense-modifier bonus;
+reflect defensive priorities explicitly in the role budget shares.
+
 For Mantra, start from `config/league.mantra.yaml`. Set `system: mantra`, total roster
 size, goalkeeper slots and the budget split between goalkeepers and movement players.
 Fantabuddy then uses the official multi-role labels, Mantra quotations and Mantra FVM:
@@ -107,3 +116,24 @@ uv run fantabuddy build `
   --config config/league.amici.yaml `
   --output-dir outputs/amici
 ```
+
+## Keep availability current during the season
+
+Injuries and suspensions move faster than anything else in the warehouse, and the official
+Fantacalcio desk is free to read. Refresh it before a build, then rebuild:
+
+```powershell
+uv run fantabuddy ingest-availability --season "2026/27" --refresh
+uv run fantabuddy build `
+  --season "2026/27" `
+  --as-of "2026-09-14" `
+  --kind september `
+  --config config/league.default.yaml `
+  --output-dir outputs/amici
+```
+
+Each run archives the page under `data/raw/fantacalcio/<YYYYMMDD>/` and reports how many
+notices it matched to the listone, how many carry a return window, and which ones stayed
+pending. Pending notices are never guessed into a player: review them before trusting the
+count. The recommended credits already account for the matchdays a player is expected to
+miss, so the availability section and the ranking agree with each other.

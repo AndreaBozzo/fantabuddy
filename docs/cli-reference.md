@@ -6,12 +6,24 @@ Run `uv run fantabuddy <command> --help` for the authoritative options of a comm
 
 ```text
 fantabuddy ingest-official-listones [--history-start 2015 --history-end 2026]
+fantabuddy ingest-availability [--season 2026/27] [--as-of YYYY-MM-DD] [--refresh]
 fantabuddy import-listoni <file-or-directory>...
 fantabuddy validate [--season 2026/27]
 fantabuddy reconcile --season 2026/27 [--mapping-csv mappings.csv]
 fantabuddy reconcile-all
 fantabuddy import-overrides config/overrides.csv
 ```
+
+`ingest-availability` reads the official Fantacalcio injury and suspension desk
+(`/indisponibili-serie-a`). It needs no API key, so it stays usable when the paid provider
+plan is not available. Each run stores the raw HTML under
+`data/raw/fantacalcio/<YYYYMMDD>/`, records the page checksum, and matches every notice
+against the active listone. Notices it cannot match to exactly one player are kept with
+`match_status = 'pending'` instead of being guessed.
+
+Re-running with the same page is idempotent: the snapshot is keyed by the page checksum,
+so it replaces its own rows rather than accumulating duplicates. Use `--refresh` to bypass
+the local cache and re-download.
 
 ## Provider acquisition
 
