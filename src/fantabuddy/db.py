@@ -686,6 +686,41 @@ def listone_summary(connection: duckdb.DuckDBPyConnection) -> list[dict[str, obj
     return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
+HISTORICAL_PLAYERS_SQL = """
+SELECT api_player_id FROM api_player_season_stats WHERE league_id = 135
+UNION SELECT api_player_id FROM api_squad_players
+UNION SELECT api_player_id FROM provider_player_mappings
+      WHERE status = 'accepted' AND api_player_id > 0
+"""
+
+CORPUS_TEAM_REFS_SQL = """
+SELECT team_id FROM api_player_team_history
+UNION SELECT team_id FROM api_player_season_stats
+UNION SELECT team_id FROM api_squad_players
+UNION SELECT home_team_id FROM api_fixtures
+UNION SELECT away_team_id FROM api_fixtures
+UNION SELECT team_in_id FROM api_player_transfers
+UNION SELECT team_out_id FROM api_player_transfers
+"""
+
+CORPUS_LEAGUE_REFS_SQL = """
+SELECT league_id FROM api_player_season_stats
+UNION SELECT league_id FROM api_fixtures
+"""
+
+
+def historical_player_ids(connection: duckdb.DuckDBPyConnection) -> list[int]:
+    return [int(row[0]) for row in connection.execute(HISTORICAL_PLAYERS_SQL).fetchall()]
+
+
+def corpus_team_ids(connection: duckdb.DuckDBPyConnection) -> list[int]:
+    return [int(row[0]) for row in connection.execute(CORPUS_TEAM_REFS_SQL).fetchall()]
+
+
+def corpus_league_ids(connection: duckdb.DuckDBPyConnection) -> list[int]:
+    return [int(row[0]) for row in connection.execute(CORPUS_LEAGUE_REFS_SQL).fetchall()]
+
+
 def corpus_inventory(connection: duckdb.DuckDBPyConnection) -> dict[str, object]:
     """Restituisce un inventario portabile del corpus senza richiedere la chiave API."""
     coverage_columns = [
@@ -700,26 +735,10 @@ def corpus_inventory(connection: duckdb.DuckDBPyConnection) -> dict[str, object]
         "league_profiles",
     ]
     coverage_row = connection.execute(
-        """
-        WITH historical_players AS (
-          SELECT api_player_id FROM api_player_season_stats WHERE league_id = 135
-          UNION SELECT api_player_id FROM api_squad_players
-          UNION SELECT api_player_id FROM provider_player_mappings
-                WHERE status = 'accepted' AND api_player_id > 0
-        ),
-        team_refs AS (
-          SELECT team_id FROM api_player_team_history
-          UNION SELECT team_id FROM api_player_season_stats
-          UNION SELECT team_id FROM api_squad_players
-          UNION SELECT home_team_id FROM api_fixtures
-          UNION SELECT away_team_id FROM api_fixtures
-          UNION SELECT team_in_id FROM api_player_transfers
-          UNION SELECT team_out_id FROM api_player_transfers
-        ),
-        league_refs AS (
-          SELECT league_id FROM api_player_season_stats
-          UNION SELECT league_id FROM api_fixtures
-        )
+        f"""
+        WITH historical_players AS ({HISTORICAL_PLAYERS_SQL}),
+        team_refs AS ({CORPUS_TEAM_REFS_SQL}),
+        league_refs AS ({CORPUS_LEAGUE_REFS_SQL})
         SELECT
           (SELECT count(*) FROM historical_players),
           (SELECT count(*) FROM historical_players p
