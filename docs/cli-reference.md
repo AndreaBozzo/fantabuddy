@@ -62,6 +62,10 @@ fantabuddy verify-corpus-export <snapshot-directory>
 
 `build` reads `system: classic` or `system: mantra` from the selected league config. Use
 `config/league.default.yaml` and `config/league.mantra.yaml` as the two starting profiles.
+Both `build` and `run` support listone-only builds without an API key; the derived
+capability matrix (`free`, `partial` or `enriched`) is written to `manifest.json` and
+rendered in `report.html`. Mapping completeness gates apply only when provider data for
+the target season is present in the warehouse.
 
 Acquisition commands are cache-first unless `--refresh` is supplied. Commands that can
 consume many calls expose a daily reserve or planned-pause behavior. See

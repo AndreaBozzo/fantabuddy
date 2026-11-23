@@ -14,6 +14,7 @@ import typer
 
 from fantabuddy import __version__
 from fantabuddy.analytics import allocate_prices, metrics_as_dicts, persist_build, train_and_project
+from fantabuddy.capabilities import provider_enrichment_active
 from fantabuddy.config import load_league_config
 from fantabuddy.corpus import (
     export_corpus_snapshot,
@@ -983,18 +984,7 @@ def build(
         raise typer.BadParameter("as-of deve usare il formato YYYY-MM-DD") from exc
     config = load_league_config(config_path)
     with database(db_path) as connection:
-        season_start = season_start_year(season)
-        provider_row = connection.execute(
-            """
-            SELECT count(*) FROM (
-              SELECT api_player_id FROM api_squad_players WHERE season_start = ?
-              UNION ALL
-              SELECT api_player_id FROM api_player_season_stats WHERE season_start = ?
-            )
-            """,
-            [season_start, season_start],
-        ).fetchone()
-        if provider_row and provider_row[0] > 0:
+        if provider_enrichment_active(connection, season):
             unresolved_row = connection.execute(
                 """
                 SELECT count(*) FROM latest_listone_players f

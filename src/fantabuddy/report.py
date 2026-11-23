@@ -9,6 +9,7 @@ from typing import Any
 import duckdb
 from jinja2 import Environment, PackageLoader, select_autoescape
 
+from fantabuddy.capabilities import CapabilityMatrix, derive_build_capabilities
 from fantabuddy.config import MANTRA_ROLES, LeagueConfig
 from fantabuddy.excel import season_start_year
 
@@ -398,6 +399,32 @@ def _recent_transfers(
     return verified
 
 
+_MODE_LABELS = {
+    "free": "Modalità gratuita",
+    "partial": "Modalità parziale",
+    "enriched": "Modalità arricchita",
+}
+
+_CAPABILITY_STATUS_LABELS = {
+    "available": "Disponibile",
+    "degraded": "Degradata",
+    "unavailable": "Non disponibile",
+}
+
+
+def _format_iso_date(value: str | None) -> str:
+    if not value:
+        return "—"
+    try:
+        parsed = datetime.fromisoformat(value)
+        return _format_date(parsed)
+    except ValueError:
+        try:
+            return _format_date(date.fromisoformat(value))
+        except ValueError:
+            return value
+
+
 def _freshness_rows(
     connection: duckdb.DuckDBPyConnection,
     season_start: int,
@@ -438,6 +465,11 @@ def _freshness_rows(
         )
         """
     ).fetchone()
+    editorial_count = int(editorial[1]) if editorial else 0
+    squads_count = int(squads[1]) if squads else 0
+    transfers_count = int(transfers[1]) if transfers else 0
+    sidelined_count = int(sidelined[1]) if sidelined else 0
+    fixtures_count = int(fixtures[1]) if fixtures else 0
     return [
         {
             "label": "Listone ufficiale",
@@ -448,32 +480,42 @@ def _freshness_rows(
             "label": "Indisponibili redazione Fantacalcio",
             "updated": _format_date(editorial[0] if editorial else None),
             "detail": (
-                f"{int(editorial[1]) if editorial else 0} segnalazioni · "
+                f"{editorial_count} segnalazioni · "
                 f"{int(editorial[2]) if editorial else 0} con finestra di rientro"
+                if editorial_count
+                else "Non acquisita"
             ),
         },
         {
             "label": "Rose API-Football",
             "updated": _format_date(squads[0] if squads else None),
-            "detail": f"{int(squads[1]) if squads else 0} profili nell'ultimo refresh",
+            "detail": (
+                f"{squads_count} profili nell'ultimo refresh" if squads_count else "Non acquisita"
+            ),
         },
         {
             "label": "Trasferimenti API-Football",
             "updated": _format_date(transfers[0] if transfers else None),
             "detail": (
-                f"{int(transfers[1]) if transfers else 0} record · ultimo movimento "
+                f"{transfers_count} record · ultimo movimento "
                 f"{_format_date(transfers[2] if transfers else None)}"
+                if transfers_count
+                else "Non acquisita"
             ),
         },
         {
             "label": "Indisponibilità API-Football",
             "updated": _format_date(sidelined[0] if sidelined else None),
-            "detail": f"{int(sidelined[1]) if sidelined else 0} episodi storici",
+            "detail": (
+                f"{sidelined_count} episodi storici" if sidelined_count else "Non acquisita"
+            ),
         },
         {
             "label": "Calendario Serie A",
             "updated": _format_date(fixtures[0] if fixtures else None),
-            "detail": f"{int(fixtures[1]) if fixtures else 0} fixture della stagione",
+            "detail": (
+                f"{fixtures_count} fixture della stagione" if fixtures_count else "Non acquisita"
+            ),
         },
     ]
 
@@ -564,7 +606,13 @@ def _summarize_diff(
     return summary, new_players, updated_players[:8], removed_players
 
 
-def render_report(connection: duckdb.DuckDBPyConnection, build_id: str, output_path: Path) -> Path:
+def render_report(
+    connection: duckdb.DuckDBPyConnection,
+    build_id: str,
+    output_path: Path,
+    *,
+    capabilities: CapabilityMatrix | None = None,
+) -> Path:
     build = connection.execute(
         """
         SELECT season, as_of, snapshot_kind, listone_snapshot_id, model_metrics_json, config_json
@@ -574,6 +622,25 @@ def render_report(connection: duckdb.DuckDBPyConnection, build_id: str, output_p
     ).fetchone()
     if not build:
         raise ValueError(f"build sconosciuta: {build_id}")
+    capability_matrix = capabilities or derive_build_capabilities(connection, build_id)
+    capability_rows = [
+        {
+            "name": item.name,
+            "label": item.label,
+            "status": item.status,
+            "status_label": _CAPABILITY_STATUS_LABELS[item.status],
+            "source": item.source or "—",
+            "coverage": item.coverage,
+            "freshness": _format_iso_date(item.freshness),
+            "fallback": item.fallback or item.detail,
+            "detail": item.detail,
+        }
+        for item in capability_matrix.capabilities
+    ]
+    capability_counts = {
+        status: sum(item.status == status for item in capability_matrix.capabilities)
+        for status in ("available", "degraded", "unavailable")
+    }
     season = str(build[0])
     season_start = season_start_year(season)
     config = json.loads(build[5])
@@ -750,10 +817,24 @@ def render_report(connection: duckdb.DuckDBPyConnection, build_id: str, output_p
         mapped_count=mapped_count,
         mapping_decision_count=mapping_decision_count,
         pending_count=pending_count,
+        squad_snapshot_available=squad_snapshot_available,
         squad_confirmed_count=squad_confirmed_count,
         fixture_forecast_count=fixture_forecast_count,
         forecast_coverage=round(100 * fixture_forecast_count / len(data)) if data else 0,
         override_count=override_count,
+        build_mode=capability_matrix.mode,
+        mode_label=_MODE_LABELS[capability_matrix.mode],
+        capability_rows=capability_rows,
+        capability_counts=capability_counts,
+        capability_status={item.name: item.status for item in capability_matrix.capabilities},
+        usage_available=(
+            capability_matrix.status("fixture_usage") != "unavailable"
+            or capability_matrix.status("fixture_forecast") != "unavailable"
+        ),
+        availability_available=capability_matrix.status("availability") != "unavailable",
+        transfers_available=capability_matrix.status("transfers") != "unavailable",
+        provider_available=capability_matrix.status("provider_identity") != "unavailable",
+        forecast_available=capability_matrix.status("fixture_forecast") != "unavailable",
         injury_count=len(availability_alerts),
         injury_unknown_count=sum(
             row["return_status"] == "unknown" for row in availability_alerts
@@ -824,7 +905,8 @@ def export_build(
         diff_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     else:
         diff_path.write_text("change_type\n", encoding="utf-8")
-    render_report(connection, build_id, report_path)
+    capabilities = derive_build_capabilities(connection, build_id)
+    render_report(connection, build_id, report_path, capabilities=capabilities)
 
     files: dict[str, dict[str, object]] = {}
     for path in (csv_path, parquet_path, diff_path, report_path):
@@ -839,6 +921,7 @@ def export_build(
     ).fetchone()
     if build is None:
         raise RuntimeError(f"build sconosciuta durante export: {build_id}")
+    capability_payload = capabilities.as_dict()
     manifest = {
         "build_id": build_id,
         "season": build[0],
@@ -847,6 +930,8 @@ def export_build(
         "listone_snapshot_id": build[3],
         "code_version": build[4],
         "data_fingerprint": build[5],
+        "build_mode": capability_payload["mode"],
+        "capabilities": capability_payload["capabilities"],
         "files": files,
     }
     manifest_path = output_dir / "manifest.json"

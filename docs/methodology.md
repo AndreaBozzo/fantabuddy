@@ -45,6 +45,31 @@ names no month, no return date is derived: the player keeps the conservative fla
 treatment and the report marks the return as still to be verified. A suspension with no
 stated duration costs one matchday rather than an open-ended absence.
 
+## Free, partial and enriched capabilities
+
+Every build derives a capability matrix from the data actually present in the warehouse,
+never from a manual mode flag. The matrix tracks seven capabilities:
+
+- `listone_ranking`: active listone records and FVM availability for the target season.
+- `historical_quotes`: prior listone seasons available for multi-year baselines.
+- `provider_identity`: reconciled API-Football mappings for active players.
+- `fixture_usage`: linked historical API season or pre-match fixture usage.
+- `availability`: official Fantacalcio editorial notices and/or API injury/sidelined data.
+- `transfers`: API-Football transfer history linked to active players.
+- `fixture_forecast`: pre-match start-share and minutes forecasts.
+
+Each capability is classified as `available`, `degraded` or `unavailable`, together with
+its active `source`, `coverage`, `freshness`, `fallback` and detail summary. The same
+matrix is rendered in the report and written to `manifest.json` alongside `build_mode`
+(`free`, `partial` or `enriched`).
+
+When no paid API-Football source is active, the build runs in `free` mode: mapping gates
+do not block listone-only builds, unsupported report sections declare themselves
+unavailable, and missing usage projections (`expected_start_share`, `expected_minutes`,
+`expected_goals`, `expected_assists`, `expected_cards`, `expected_rating`) stay `null`
+instead of being filled with zeros. Mapping completeness gates apply only when target
+season provider enrichment is actually loaded in the warehouse.
+
 ## What the report can and cannot say
 
 - API-Football ratings are provider ratings, not official Fantacalcio votes.
