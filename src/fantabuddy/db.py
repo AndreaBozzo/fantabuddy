@@ -524,22 +524,28 @@ CREATE TABLE IF NOT EXISTS auction_values (
     rosterable BOOLEAN NOT NULL,
     tier VARCHAR NOT NULL,
     reliability INTEGER NOT NULL,
-    expected_start_share DOUBLE NOT NULL DEFAULT 0,
-    expected_minutes DOUBLE NOT NULL DEFAULT 0,
-    expected_goals DOUBLE NOT NULL DEFAULT 0,
-    expected_assists DOUBLE NOT NULL DEFAULT 0,
-    expected_cards DOUBLE NOT NULL DEFAULT 0,
-    expected_rating DOUBLE NOT NULL DEFAULT 0,
+    expected_start_share DOUBLE,
+    expected_minutes DOUBLE,
+    expected_goals DOUBLE,
+    expected_assists DOUBLE,
+    expected_cards DOUBLE,
+    expected_rating DOUBLE,
     explanation VARCHAR NOT NULL,
     PRIMARY KEY (build_id, fantacalcio_id)
 );
 
-ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_minutes DOUBLE DEFAULT 0;
-ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_start_share DOUBLE DEFAULT 0;
-ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_goals DOUBLE DEFAULT 0;
-ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_assists DOUBLE DEFAULT 0;
-ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_cards DOUBLE DEFAULT 0;
-ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_rating DOUBLE DEFAULT 0;
+ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_minutes DOUBLE;
+ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_start_share DOUBLE;
+ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_goals DOUBLE;
+ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_assists DOUBLE;
+ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_cards DOUBLE;
+ALTER TABLE auction_values ADD COLUMN IF NOT EXISTS expected_rating DOUBLE;
+ALTER TABLE auction_values ALTER COLUMN expected_start_share DROP NOT NULL;
+ALTER TABLE auction_values ALTER COLUMN expected_minutes DROP NOT NULL;
+ALTER TABLE auction_values ALTER COLUMN expected_goals DROP NOT NULL;
+ALTER TABLE auction_values ALTER COLUMN expected_assists DROP NOT NULL;
+ALTER TABLE auction_values ALTER COLUMN expected_cards DROP NOT NULL;
+ALTER TABLE auction_values ALTER COLUMN expected_rating DROP NOT NULL;
 
 CREATE OR REPLACE VIEW latest_listone_snapshots AS
 SELECT * EXCLUDE (row_number)
@@ -583,6 +589,18 @@ def database(path: Path, *, read_only: bool = False) -> Iterator[duckdb.DuckDBPy
         connection.close()
 
 
+@contextmanager
+def transaction(connection: duckdb.DuckDBPyConnection) -> Iterator[None]:
+    connection.execute("BEGIN TRANSACTION")
+    try:
+        yield
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
+    else:
+        connection.execute("COMMIT")
+
+
 def ingest_listone(connection: duckdb.DuckDBPyConnection, data: ListoneImport) -> bool:
     exists_row = connection.execute(
         "SELECT count(*) FROM listone_snapshots WHERE snapshot_id = ?", [data.snapshot_id]
@@ -594,8 +612,7 @@ def ingest_listone(connection: duckdb.DuckDBPyConnection, data: ListoneImport) -
         return False
 
     now = datetime.now(tz=UTC)
-    connection.execute("BEGIN TRANSACTION")
-    try:
+    with transaction(connection):
         connection.execute(
             """
             INSERT INTO listone_snapshots (
@@ -654,10 +671,6 @@ def ingest_listone(connection: duckdb.DuckDBPyConnection, data: ListoneImport) -
             """,
             rows,
         )
-        connection.execute("COMMIT")
-    except Exception:
-        connection.execute("ROLLBACK")
-        raise
     return True
 
 
@@ -679,6 +692,41 @@ def listone_summary(connection: duckdb.DuckDBPyConnection) -> list[dict[str, obj
     return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
+HISTORICAL_PLAYERS_SQL = """
+SELECT api_player_id FROM api_player_season_stats WHERE league_id = 135
+UNION SELECT api_player_id FROM api_squad_players
+UNION SELECT api_player_id FROM provider_player_mappings
+      WHERE status = 'accepted' AND api_player_id > 0
+"""
+
+CORPUS_TEAM_REFS_SQL = """
+SELECT team_id FROM api_player_team_history
+UNION SELECT team_id FROM api_player_season_stats
+UNION SELECT team_id FROM api_squad_players
+UNION SELECT home_team_id FROM api_fixtures
+UNION SELECT away_team_id FROM api_fixtures
+UNION SELECT team_in_id FROM api_player_transfers
+UNION SELECT team_out_id FROM api_player_transfers
+"""
+
+CORPUS_LEAGUE_REFS_SQL = """
+SELECT league_id FROM api_player_season_stats
+UNION SELECT league_id FROM api_fixtures
+"""
+
+
+def historical_player_ids(connection: duckdb.DuckDBPyConnection) -> list[int]:
+    return [int(row[0]) for row in connection.execute(HISTORICAL_PLAYERS_SQL).fetchall()]
+
+
+def corpus_team_ids(connection: duckdb.DuckDBPyConnection) -> list[int]:
+    return [int(row[0]) for row in connection.execute(CORPUS_TEAM_REFS_SQL).fetchall()]
+
+
+def corpus_league_ids(connection: duckdb.DuckDBPyConnection) -> list[int]:
+    return [int(row[0]) for row in connection.execute(CORPUS_LEAGUE_REFS_SQL).fetchall()]
+
+
 def corpus_inventory(connection: duckdb.DuckDBPyConnection) -> dict[str, object]:
     """Restituisce un inventario portabile del corpus senza richiedere la chiave API."""
     coverage_columns = [
@@ -693,26 +741,10 @@ def corpus_inventory(connection: duckdb.DuckDBPyConnection) -> dict[str, object]
         "league_profiles",
     ]
     coverage_row = connection.execute(
-        """
-        WITH historical_players AS (
-          SELECT api_player_id FROM api_player_season_stats WHERE league_id = 135
-          UNION SELECT api_player_id FROM api_squad_players
-          UNION SELECT api_player_id FROM provider_player_mappings
-                WHERE status = 'accepted' AND api_player_id > 0
-        ),
-        team_refs AS (
-          SELECT team_id FROM api_player_team_history
-          UNION SELECT team_id FROM api_player_season_stats
-          UNION SELECT team_id FROM api_squad_players
-          UNION SELECT home_team_id FROM api_fixtures
-          UNION SELECT away_team_id FROM api_fixtures
-          UNION SELECT team_in_id FROM api_player_transfers
-          UNION SELECT team_out_id FROM api_player_transfers
-        ),
-        league_refs AS (
-          SELECT league_id FROM api_player_season_stats
-          UNION SELECT league_id FROM api_fixtures
-        )
+        f"""
+        WITH historical_players AS ({HISTORICAL_PLAYERS_SQL}),
+        team_refs AS ({CORPUS_TEAM_REFS_SQL}),
+        league_refs AS ({CORPUS_LEAGUE_REFS_SQL})
         SELECT
           (SELECT count(*) FROM historical_players),
           (SELECT count(*) FROM historical_players p

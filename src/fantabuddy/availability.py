@@ -9,6 +9,8 @@ import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.metrics import brier_score_loss, mean_absolute_error
 
+from fantabuddy.excel import season_start_year
+
 AVAILABILITY_FEATURES = (
     "history_squad_matches",
     "history_appearances",
@@ -31,6 +33,39 @@ AVAILABILITY_FEATURES = (
 )
 
 MINIMUM_RELATIVE_IMPROVEMENT = 0.01
+_MINUTES_5_INDEX = 2 + AVAILABILITY_FEATURES.index("minutes_avg_5")
+_START_5_INDEX = 2 + AVAILABILITY_FEATURES.index("start_share_5")
+
+
+def _start_model() -> HistGradientBoostingClassifier:
+    return HistGradientBoostingClassifier(
+        learning_rate=0.06,
+        max_iter=140,
+        max_leaf_nodes=15,
+        min_samples_leaf=60,
+        l2_regularization=1.0,
+        random_state=42,
+    )
+
+
+def _minutes_model() -> HistGradientBoostingRegressor:
+    return HistGradientBoostingRegressor(
+        loss="absolute_error",
+        learning_rate=0.06,
+        max_iter=140,
+        max_leaf_nodes=15,
+        min_samples_leaf=60,
+        l2_regularization=1.0,
+        random_state=42,
+    )
+
+
+def _baseline_series(
+    rows: list[tuple[Any, ...]], column_index: int, fallback: float
+) -> np.ndarray:
+    return np.asarray(
+        [fallback if row[column_index] is None else float(row[column_index]) for row in rows]
+    )
 
 
 @dataclass(frozen=True)
@@ -179,7 +214,7 @@ def train_availability_models(
     target_season: str,
     as_of: date,
 ) -> tuple[dict[int, AvailabilityForecast], AvailabilityValidation | None]:
-    target_start = int(target_season.split("/", maxsplit=1)[0])
+    target_start = season_start_year(target_season)
     train, validation = _training_rows(connection, target_start)
     current = _current_rows(connection, target_season, as_of)
     if len(train) < 500 or len(validation) < 100 or not current:
@@ -194,20 +229,9 @@ def train_availability_models(
     validation_minutes = np.asarray([float(row[1]) for row in validation])
 
     global_start = float(np.mean(train_started))
-    start_baseline = np.asarray(
-        [global_start if row[10] is None else float(row[10]) for row in validation]
-    )
-    start_baseline = np.clip(start_baseline, 0.01, 0.99)
+    start_baseline = np.clip(_baseline_series(validation, _START_5_INDEX, global_start), 0.01, 0.99)
     start_baseline_brier = float(brier_score_loss(validation_started, start_baseline))
-    validation_start_model = HistGradientBoostingClassifier(
-        learning_rate=0.06,
-        max_iter=140,
-        max_leaf_nodes=15,
-        min_samples_leaf=60,
-        l2_regularization=1.0,
-        random_state=42,
-    )
-    validation_start_model.fit(train_x, train_started)
+    validation_start_model = _start_model().fit(train_x, train_started)
     start_model_predictions = np.clip(
         validation_start_model.predict_proba(validation_x)[:, 1], 0.01, 0.99
     )
@@ -215,20 +239,9 @@ def train_availability_models(
     use_start_model = _passes_validation_gate(start_model_brier, start_baseline_brier)
 
     global_minutes = float(np.mean(train_minutes))
-    minutes_baseline = np.asarray(
-        [global_minutes if row[9] is None else float(row[9]) for row in validation]
-    )
+    minutes_baseline = _baseline_series(validation, _MINUTES_5_INDEX, global_minutes)
     minutes_baseline_mae = float(mean_absolute_error(validation_minutes, minutes_baseline))
-    validation_minutes_model = HistGradientBoostingRegressor(
-        loss="absolute_error",
-        learning_rate=0.06,
-        max_iter=140,
-        max_leaf_nodes=15,
-        min_samples_leaf=60,
-        l2_regularization=1.0,
-        random_state=42,
-    )
-    validation_minutes_model.fit(train_x, train_minutes)
+    validation_minutes_model = _minutes_model().fit(train_x, train_minutes)
     minutes_model_predictions = validation_minutes_model.predict(validation_x)
     minutes_model_mae = float(mean_absolute_error(validation_minutes, minutes_model_predictions))
     use_minutes_model = _passes_validation_gate(minutes_model_mae, minutes_baseline_mae)
@@ -238,34 +251,13 @@ def train_availability_models(
     all_started = np.asarray([float(row[0]) for row in all_rows])
     all_minutes = np.asarray([float(row[1]) for row in all_rows])
     if use_start_model:
-        production_start = HistGradientBoostingClassifier(
-            learning_rate=0.06,
-            max_iter=140,
-            max_leaf_nodes=15,
-            min_samples_leaf=60,
-            l2_regularization=1.0,
-            random_state=42,
-        ).fit(all_x, all_started)
-        current_start = production_start.predict_proba(current_x)[:, 1]
+        current_start = _start_model().fit(all_x, all_started).predict_proba(current_x)[:, 1]
     else:
-        current_start = np.asarray(
-            [global_start if row[10] is None else float(row[10]) for row in current]
-        )
+        current_start = _baseline_series(current, _START_5_INDEX, global_start)
     if use_minutes_model:
-        production_minutes = HistGradientBoostingRegressor(
-            loss="absolute_error",
-            learning_rate=0.06,
-            max_iter=140,
-            max_leaf_nodes=15,
-            min_samples_leaf=60,
-            l2_regularization=1.0,
-            random_state=42,
-        ).fit(all_x, all_minutes)
-        current_minutes = production_minutes.predict(current_x)
+        current_minutes = _minutes_model().fit(all_x, all_minutes).predict(current_x)
     else:
-        current_minutes = np.asarray(
-            [global_minutes if row[9] is None else float(row[9]) for row in current]
-        )
+        current_minutes = _baseline_series(current, _MINUTES_5_INDEX, global_minutes)
 
     forecasts = {
         int(row[0]): AvailabilityForecast(

@@ -88,8 +88,9 @@ Mantra has no fixed 3-8-8-6 roster cage. The generated pool estimates overall au
 depth and preserves every eligibility role; it does not claim that each manager can form
 a valid tactical squad from an arbitrary slice of that pool.
 
-The report needs reconciled provider history. Complete the API workflow in
-[Data and corpus](data-and-corpus.md), review pending mappings, then run:
+`fantabuddy build` and `fantabuddy run` work directly on official listoni without an API
+key (**free mode**). Run `ingest-availability` as well if you want official editorial
+injuries and suspensions in the free build:
 
 ```powershell
 uv run fantabuddy build `
@@ -99,8 +100,16 @@ uv run fantabuddy build `
   --config config/league.default.yaml
 ```
 
+The build derives its capability matrix (`free`, `partial` or `enriched`) from the sources
+actually present in the warehouse. Sections that lack a backing source are marked as
+unavailable and missing metrics stay empty (`—` / `null`) instead of becoming synthetic
+zeros. To add provider stats, fixture forecasts, squad confirmations and transfers,
+complete the API workflow in [Data and corpus](data-and-corpus.md), review pending
+mappings, and rebuild.
+
 The build directory contains `report.html`, `ranking.csv`, `ranking.parquet`, `diff.csv`
-and `manifest.json`. The HTML report has no runtime server or network dependency.
+and `manifest.json` (which includes `build_mode` and the machine-readable `capabilities`
+matrix). The HTML report has no runtime server or network dependency.
 
 ## Multiple leagues
 

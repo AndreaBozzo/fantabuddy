@@ -4,16 +4,17 @@ import hashlib
 import json
 import subprocess
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import date
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Protocol
 
 import duckdb
 import typer
 
 from fantabuddy import __version__
 from fantabuddy.analytics import allocate_prices, metrics_as_dicts, persist_build, train_and_project
+from fantabuddy.capabilities import provider_enrichment_active
 from fantabuddy.config import load_league_config
 from fantabuddy.corpus import (
     export_corpus_snapshot,
@@ -21,13 +22,21 @@ from fantabuddy.corpus import (
     verify_corpus_snapshot,
 )
 from fantabuddy.curation import import_overrides_csv
-from fantabuddy.db import corpus_inventory, database, ingest_listone, listone_summary
+from fantabuddy.db import (
+    corpus_inventory,
+    corpus_league_ids,
+    corpus_team_ids,
+    database,
+    historical_player_ids,
+    ingest_listone,
+    listone_summary,
+)
 from fantabuddy.editorial import (
     download_editorial_availability,
     import_editorial_availability,
     read_editorial_availability,
 )
-from fantabuddy.excel import read_listone
+from fantabuddy.excel import read_listone, season_start_year
 from fantabuddy.features import materialize_player_fixture_features
 from fantabuddy.mapping import export_pending_mappings, import_mapping_csv, reconcile_season
 from fantabuddy.official import (
@@ -231,6 +240,95 @@ def provider_check(
         typer.echo(json.dumps(output, indent=2))
 
 
+class _CohortIngestor(Protocol):
+    def __call__(
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        client: ApiFootballClient,
+        entity_ids: list[int],
+        /,
+        *,
+        workers: int = 4,
+        daily_reserve: int = 100,
+    ) -> Mapping[str, object]: ...
+
+
+class _SeasonIngestor(Protocol):
+    def __call__(
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        client: ApiFootballClient,
+        season_start: int,
+        /,
+        *,
+        refresh: bool = False,
+    ) -> Mapping[str, object]: ...
+
+
+def _parse_seasons(seasons: str) -> list[int]:
+    return [int(value.strip()) for value in seasons.split(",") if value.strip()]
+
+
+def _run_quota_guarded_seasons(
+    seasons: list[int],
+    *,
+    pause_ok: bool,
+    error_label: str,
+    action: Callable[[int], None],
+) -> None:
+    for season_start in seasons:
+        try:
+            action(season_start)
+        except DailyQuotaGuard as exc:
+            typer.echo(f"PAUSA QUOTA: {exc}", err=True)
+            if pause_ok:
+                return
+            raise typer.Exit(code=75) from exc
+        except ApiFootballError as exc:
+            typer.echo(f"{error_label}: {exc}", err=True)
+            raise typer.Exit(code=78) from exc
+
+
+def _run_cohort_ingest(
+    db_path: Path,
+    cache_dir: Path,
+    daily_reserve: int,
+    workers: int,
+    selector: Callable[[duckdb.DuckDBPyConnection], list[int]],
+    ingestor: _CohortIngestor,
+) -> None:
+    with (
+        database(db_path) as connection,
+        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
+    ):
+        client.status()
+        summary = ingestor(
+            connection,
+            client,
+            selector(connection),
+            workers=workers,
+            daily_reserve=daily_reserve,
+        )
+        typer.echo(json.dumps(summary, indent=2))
+
+
+def _run_season_ingest(
+    db_path: Path,
+    cache_dir: Path,
+    daily_reserve: int,
+    season_start: int,
+    refresh: bool,
+    ingestor: _SeasonIngestor,
+) -> None:
+    with (
+        database(db_path) as connection,
+        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
+    ):
+        client.status()
+        summary = ingestor(connection, client, season_start, refresh=refresh)
+        typer.echo(json.dumps(summary, indent=2))
+
+
 @app.command("ingest-api")
 def ingest_api(
     seasons: Annotated[str, typer.Option(help="Anni iniziali separati da virgola, es. 2022,2023")],
@@ -245,24 +343,19 @@ def ingest_api(
     ] = False,
 ) -> None:
     """Acquisisce statistiche aggregate; si può rilanciare per riprendere dalla cache."""
-    season_values = [int(value.strip()) for value in seasons.split(",") if value.strip()]
     with (
         database(db_path) as connection,
         ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
     ):
         client.status()
-        for season_start in season_values:
-            try:
-                summary = ingest_player_season(connection, client, season_start, refresh=refresh)
-                typer.echo(json.dumps(summary))
-            except DailyQuotaGuard as exc:
-                typer.echo(f"PAUSA QUOTA: {exc}", err=True)
-                if pause_ok:
-                    return
-                raise typer.Exit(code=75) from exc
-            except ApiFootballError as exc:
-                typer.echo(f"ACQUISIZIONE INCOMPLETA: {exc}", err=True)
-                raise typer.Exit(code=78) from exc
+        _run_quota_guarded_seasons(
+            _parse_seasons(seasons),
+            pause_ok=pause_ok,
+            error_label="ACQUISIZIONE INCOMPLETA",
+            action=lambda season_start: typer.echo(
+                json.dumps(ingest_player_season(connection, client, season_start, refresh=refresh))
+            ),
+        )
 
 
 @app.command("ingest-fixtures")
@@ -290,45 +383,43 @@ def ingest_fixtures(
     ] = False,
 ) -> None:
     """Acquisisce fixture e dettagli granulari con batch da massimo 20 partite."""
-    season_values = [int(value.strip()) for value in seasons.split(",") if value.strip()]
     with (
         database(db_path) as connection,
         ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
     ):
         client.status()
-        for season_start in season_values:
-            try:
-                team_ids: list[int] | None = None
-                if serie_a_team_scope:
-                    rows = connection.execute(
-                        """
-                        SELECT DISTINCT team_id FROM api_player_season_stats
-                        WHERE league_id = ? AND season_start = ?
-                        UNION
-                        SELECT DISTINCT team_id FROM api_squad_players WHERE season_start = ?
-                        """,
-                        [SERIE_A_LEAGUE_ID, season_start, season_start],
-                    ).fetchall()
-                    team_ids = [int(row[0]) for row in rows]
-                summary = ingest_fixture_history(
-                    connection,
-                    client,
-                    season_start,
-                    league_id=league_id,
-                    refresh=refresh,
-                    completed_only=not include_unfinished,
-                    batch_size=batch_size,
-                    team_ids=team_ids,
-                )
-                typer.echo(json.dumps(summary, indent=2))
-            except DailyQuotaGuard as exc:
-                typer.echo(f"PAUSA QUOTA: {exc}", err=True)
-                if pause_ok:
-                    return
-                raise typer.Exit(code=75) from exc
-            except ApiFootballError as exc:
-                typer.echo(f"ACQUISIZIONE FIXTURE INCOMPLETA: {exc}", err=True)
-                raise typer.Exit(code=78) from exc
+
+        def ingest_one(season_start: int) -> None:
+            team_ids: list[int] | None = None
+            if serie_a_team_scope:
+                rows = connection.execute(
+                    """
+                    SELECT DISTINCT team_id FROM api_player_season_stats
+                    WHERE league_id = ? AND season_start = ?
+                    UNION
+                    SELECT DISTINCT team_id FROM api_squad_players WHERE season_start = ?
+                    """,
+                    [SERIE_A_LEAGUE_ID, season_start, season_start],
+                ).fetchall()
+                team_ids = [int(row[0]) for row in rows]
+            summary = ingest_fixture_history(
+                connection,
+                client,
+                season_start,
+                league_id=league_id,
+                refresh=refresh,
+                completed_only=not include_unfinished,
+                batch_size=batch_size,
+                team_ids=team_ids,
+            )
+            typer.echo(json.dumps(summary, indent=2))
+
+        _run_quota_guarded_seasons(
+            _parse_seasons(seasons),
+            pause_ok=pause_ok,
+            error_label="ACQUISIZIONE FIXTURE INCOMPLETA",
+            action=ingest_one,
+        )
 
 
 @app.command("build-fixture-features")
@@ -370,7 +461,7 @@ def reconcile_all(
         result: dict[str, dict[str, int]] = {}
         for item in listone_summary(connection):
             season = str(item["season"])
-            season_start = int(season.split("/", maxsplit=1)[0])
+            season_start = season_start_year(season)
             api_count_row = connection.execute(
                 "SELECT count(*) FROM api_player_season_stats WHERE season_start = ?",
                 [season_start],
@@ -392,13 +483,7 @@ def ingest_injury_data(
     ] = False,
 ) -> None:
     """Acquisisce gli infortuni della stagione rispettando lo stesso budget API."""
-    with (
-        database(db_path) as connection,
-        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
-    ):
-        client.status()
-        summary = ingest_injuries(connection, client, season_start, refresh=refresh)
-        typer.echo(json.dumps(summary, indent=2))
+    _run_season_ingest(db_path, cache_dir, daily_reserve, season_start, refresh, ingest_injuries)
 
 
 @app.command("ingest-squads")
@@ -410,13 +495,7 @@ def ingest_squad_data(
     refresh: Annotated[bool, typer.Option(help="Aggiorna le rose ignorando la cache")] = False,
 ) -> None:
     """Acquisisce le rose correnti con una chiamata per club, utile prima della prima giornata."""
-    with (
-        database(db_path) as connection,
-        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
-    ):
-        client.status()
-        summary = ingest_squads(connection, client, season_start, refresh=refresh)
-        typer.echo(json.dumps(summary, indent=2))
+    _run_season_ingest(db_path, cache_dir, daily_reserve, season_start, refresh, ingest_squads)
 
 
 @app.command("ingest-transfers")
@@ -451,67 +530,14 @@ def ingest_transfer_data(
                     "--refresh non è supportato per la coorte storica; "
                     "la cache rende il backfill riprendibile"
                 )
-            rows = connection.execute(
-                """
-                SELECT DISTINCT api_player_id FROM api_player_season_stats
-                WHERE league_id = ?
-                UNION
-                SELECT DISTINCT api_player_id FROM api_squad_players
-                UNION
-                SELECT DISTINCT api_player_id FROM provider_player_mappings
-                WHERE status = 'accepted' AND api_player_id > 0
-                """,
-                [SERIE_A_LEAGUE_ID],
-            ).fetchall()
             summary = ingest_player_transfers(
                 connection,
                 client,
-                [int(row[0]) for row in rows],
+                historical_player_ids(connection),
                 workers=workers,
                 daily_reserve=daily_reserve,
             )
         typer.echo(json.dumps({"cohort": cohort, **summary}, indent=2))
-
-
-def _serie_a_history_player_ids(connection: duckdb.DuckDBPyConnection) -> list[int]:
-    rows = connection.execute(
-        """
-        SELECT DISTINCT api_player_id FROM api_player_season_stats
-        WHERE league_id = ?
-        UNION
-        SELECT DISTINCT api_player_id FROM api_squad_players
-        UNION
-        SELECT DISTINCT api_player_id FROM provider_player_mappings
-        WHERE status = 'accepted' AND api_player_id > 0
-        """,
-        [SERIE_A_LEAGUE_ID],
-    ).fetchall()
-    return [int(row[0]) for row in rows]
-
-
-def _corpus_team_ids(connection: duckdb.DuckDBPyConnection) -> list[int]:
-    rows = connection.execute(
-        """
-        SELECT team_id FROM api_player_team_history
-        UNION SELECT team_id FROM api_player_season_stats
-        UNION SELECT team_id FROM api_squad_players
-        UNION SELECT home_team_id FROM api_fixtures
-        UNION SELECT away_team_id FROM api_fixtures
-        UNION SELECT team_in_id FROM api_player_transfers
-        UNION SELECT team_out_id FROM api_player_transfers
-        """
-    ).fetchall()
-    return [int(row[0]) for row in rows]
-
-
-def _corpus_league_ids(connection: duckdb.DuckDBPyConnection) -> list[int]:
-    rows = connection.execute(
-        """
-        SELECT league_id FROM api_player_season_stats
-        UNION SELECT league_id FROM api_fixtures
-        """
-    ).fetchall()
-    return [int(row[0]) for row in rows]
 
 
 @app.command("ingest-player-teams")
@@ -522,19 +548,14 @@ def ingest_player_teams(
     workers: Annotated[int, typer.Option("--workers", min=1, max=8)] = 4,
 ) -> None:
     """Acquisisce squadre e stagioni di carriera per la coorte storica Serie A."""
-    with (
-        database(db_path) as connection,
-        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
-    ):
-        client.status()
-        summary = ingest_player_team_history(
-            connection,
-            client,
-            _serie_a_history_player_ids(connection),
-            workers=workers,
-            daily_reserve=daily_reserve,
-        )
-        typer.echo(json.dumps(summary, indent=2))
+    _run_cohort_ingest(
+        db_path,
+        cache_dir,
+        daily_reserve,
+        workers,
+        historical_player_ids,
+        ingest_player_team_history,
+    )
 
 
 @app.command("ingest-player-profiles")
@@ -545,19 +566,9 @@ def ingest_exact_player_profiles(
     workers: Annotated[int, typer.Option("--workers", min=1, max=8)] = 4,
 ) -> None:
     """Acquisisce profili anagrafici esatti per la coorte storica Serie A."""
-    with (
-        database(db_path) as connection,
-        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
-    ):
-        client.status()
-        summary = ingest_player_profiles(
-            connection,
-            client,
-            _serie_a_history_player_ids(connection),
-            workers=workers,
-            daily_reserve=daily_reserve,
-        )
-        typer.echo(json.dumps(summary, indent=2))
+    _run_cohort_ingest(
+        db_path, cache_dir, daily_reserve, workers, historical_player_ids, ingest_player_profiles
+    )
 
 
 @app.command("ingest-team-profiles")
@@ -568,19 +579,9 @@ def ingest_exact_team_profiles(
     workers: Annotated[int, typer.Option("--workers", min=1, max=8)] = 4,
 ) -> None:
     """Acquisisce metadati esatti per tutti i club referenziati nel corpus."""
-    with (
-        database(db_path) as connection,
-        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
-    ):
-        client.status()
-        summary = ingest_team_profiles(
-            connection,
-            client,
-            _corpus_team_ids(connection),
-            workers=workers,
-            daily_reserve=daily_reserve,
-        )
-        typer.echo(json.dumps(summary, indent=2))
+    _run_cohort_ingest(
+        db_path, cache_dir, daily_reserve, workers, corpus_team_ids, ingest_team_profiles
+    )
 
 
 @app.command("ingest-league-profiles")
@@ -591,19 +592,9 @@ def ingest_exact_league_profiles(
     workers: Annotated[int, typer.Option("--workers", min=1, max=8)] = 4,
 ) -> None:
     """Acquisisce metadati, stagioni e coverage delle competizioni nel corpus."""
-    with (
-        database(db_path) as connection,
-        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
-    ):
-        client.status()
-        summary = ingest_league_profiles(
-            connection,
-            client,
-            _corpus_league_ids(connection),
-            workers=workers,
-            daily_reserve=daily_reserve,
-        )
-        typer.echo(json.dumps(summary, indent=2))
+    _run_cohort_ingest(
+        db_path, cache_dir, daily_reserve, workers, corpus_league_ids, ingest_league_profiles
+    )
 
 
 @app.command("ingest-player-seasons")
@@ -614,19 +605,14 @@ def ingest_available_player_seasons(
     workers: Annotated[int, typer.Option("--workers", min=1, max=8)] = 4,
 ) -> None:
     """Indicizza le stagioni interrogabili per la coorte storica Serie A."""
-    with (
-        database(db_path) as connection,
-        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
-    ):
-        client.status()
-        summary = ingest_player_available_seasons(
-            connection,
-            client,
-            _serie_a_history_player_ids(connection),
-            workers=workers,
-            daily_reserve=daily_reserve,
-        )
-        typer.echo(json.dumps(summary, indent=2))
+    _run_cohort_ingest(
+        db_path,
+        cache_dir,
+        daily_reserve,
+        workers,
+        historical_player_ids,
+        ingest_player_available_seasons,
+    )
 
 
 @app.command("ingest-player-trophies")
@@ -637,19 +623,9 @@ def ingest_historical_player_trophies(
     workers: Annotated[int, typer.Option("--workers", min=1, max=8)] = 4,
 ) -> None:
     """Acquisisce il palmarès della coorte storica Serie A."""
-    with (
-        database(db_path) as connection,
-        ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
-    ):
-        client.status()
-        summary = ingest_player_trophies(
-            connection,
-            client,
-            _serie_a_history_player_ids(connection),
-            workers=workers,
-            daily_reserve=daily_reserve,
-        )
-        typer.echo(json.dumps(summary, indent=2))
+    _run_cohort_ingest(
+        db_path, cache_dir, daily_reserve, workers, historical_player_ids, ingest_player_trophies
+    )
 
 
 @app.command("harvest-corpus")
@@ -665,19 +641,19 @@ def harvest_corpus(
         ApiFootballClient(cache_dir, daily_reserve=daily_reserve) as client,
     ):
         status = client.status()
-        players = _serie_a_history_player_ids(connection)
+        players = historical_player_ids(connection)
         results = {
             "leagues": ingest_league_profiles(
                 connection,
                 client,
-                _corpus_league_ids(connection),
+                corpus_league_ids(connection),
                 workers=workers,
                 daily_reserve=daily_reserve,
             ),
             "teams": ingest_team_profiles(
                 connection,
                 client,
-                _corpus_team_ids(connection),
+                corpus_team_ids(connection),
                 workers=workers,
                 daily_reserve=daily_reserve,
             ),
@@ -797,23 +773,13 @@ def ingest_sidelined_data(
                 """,
                 [season_start, f"{season_start}/{str(season_start + 1)[-2:]}"],
             ).fetchall()
+            player_ids = [int(row[0]) for row in rows]
         else:
-            rows = connection.execute(
-                """
-                SELECT DISTINCT api_player_id FROM api_player_season_stats
-                WHERE league_id = ?
-                UNION
-                SELECT DISTINCT api_player_id FROM api_squad_players
-                UNION
-                SELECT DISTINCT api_player_id FROM provider_player_mappings
-                WHERE status = 'accepted' AND api_player_id > 0
-                """,
-                [SERIE_A_LEAGUE_ID],
-            ).fetchall()
+            player_ids = historical_player_ids(connection)
         summary = ingest_sidelined_history(
             connection,
             client,
-            [int(row[0]) for row in rows],
+            player_ids,
             batch_size=batch_size,
             refresh=refresh,
         )
@@ -1018,18 +984,7 @@ def build(
         raise typer.BadParameter("as-of deve usare il formato YYYY-MM-DD") from exc
     config = load_league_config(config_path)
     with database(db_path) as connection:
-        season_start = int(season.split("/", maxsplit=1)[0])
-        provider_row = connection.execute(
-            """
-            SELECT count(*) FROM (
-              SELECT api_player_id FROM api_squad_players WHERE season_start = ?
-              UNION ALL
-              SELECT api_player_id FROM api_player_season_stats WHERE season_start = ?
-            )
-            """,
-            [season_start, season_start],
-        ).fetchone()
-        if provider_row and provider_row[0] > 0:
+        if provider_enrichment_active(connection, season):
             unresolved_row = connection.execute(
                 """
                 SELECT count(*) FROM latest_listone_players f

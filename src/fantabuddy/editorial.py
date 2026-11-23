@@ -11,7 +11,6 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +18,12 @@ import duckdb
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from fantabuddy.excel import file_sha256
+from fantabuddy.official import download_official_html
+
 EDITORIAL_BASE_URL = "https://www.fantacalcio.it"
 EDITORIAL_AVAILABILITY_PATH = "/indisponibili-serie-a"
 EDITORIAL_AVAILABILITY_URL = f"{EDITORIAL_BASE_URL}{EDITORIAL_AVAILABILITY_PATH}"
-USER_AGENT = "fantabuddy/0.4 (+https://github.com/AndreaBozzo/fantabuddy)"
 
 CATEGORY_LABELS = {
     "Infortunati": "infortunio",
@@ -96,14 +97,6 @@ def _fold(value: str) -> str:
     return "".join(char for char in decomposed if not unicodedata.combining(char)).casefold()
 
 
-def file_sha256(path: Path) -> str:
-    digest = sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def download_editorial_availability(
     output_dir: Path,
     *,
@@ -111,34 +104,13 @@ def download_editorial_availability(
     transport: httpx.BaseTransport | None = None,
 ) -> tuple[Path, bool]:
     """Scarica la pagina ufficiale degli indisponibili conservando il payload grezzo."""
-    output_dir = output_dir.expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    target = output_dir / "indisponibili-serie-a.html"
-    if target.is_file() and not refresh:
-        return target, True
-
-    with httpx.Client(
-        follow_redirects=True,
-        timeout=30.0,
-        headers={"User-Agent": USER_AGENT},
+    return download_official_html(
+        EDITORIAL_AVAILABILITY_URL,
+        output_dir / "indisponibili-serie-a.html",
+        validate=read_editorial_availability,
+        refresh=refresh,
         transport=transport,
-    ) as client:
-        response = client.get(EDITORIAL_AVAILABILITY_URL)
-        response.raise_for_status()
-    if str(response.url).rstrip("/") != EDITORIAL_AVAILABILITY_URL:
-        raise ValueError(
-            f"la pagina ufficiale {EDITORIAL_AVAILABILITY_URL} reindirizza a {response.url}"
-        )
-
-    temporary = target.with_suffix(".html.tmp")
-    temporary.write_bytes(response.content)
-    try:
-        read_editorial_availability(temporary)
-        temporary.replace(target)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
-    return target, False
+    )
 
 
 def _category_of(header: Tag) -> str | None:
@@ -352,18 +324,3 @@ def import_editorial_availability(
         "checksum": snapshot.checksum,
         "observed_at": snapshot.observed_at.isoformat(),
     }
-
-
-def latest_snapshot_id(
-    connection: duckdb.DuckDBPyConnection, season: str
-) -> str | None:
-    row = connection.execute(
-        """
-        SELECT snapshot_id
-        FROM editorial_availability
-        WHERE season = ?
-        QUALIFY row_number() OVER (ORDER BY observed_at DESC, snapshot_id) = 1
-        """,
-        [season],
-    ).fetchone()
-    return None if row is None else str(row[0])

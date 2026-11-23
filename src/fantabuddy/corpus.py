@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -17,6 +16,7 @@ import duckdb
 
 from fantabuddy import __version__
 from fantabuddy.db import database
+from fantabuddy.excel import file_sha256
 
 CORPUS_FORMAT_VERSION = 1
 CORPUS_TABLES = (
@@ -59,6 +59,20 @@ _MAX_IMPORT_BYTES = 10 * 1024**3
 _MAX_ENTRY_BYTES = 4 * 1024**3
 _MAX_MANIFEST_BYTES = 16 * 1024**2
 _IMPORT_DISK_RESERVE = 64 * 1024**2
+
+
+def _query_schema(
+    connection: duckdb.DuckDBPyConnection,
+    sql: str,
+    params: list[object] | None = None,
+) -> list[dict[str, str]]:
+    if params is None:
+        connection.execute(sql)
+    else:
+        connection.execute(sql, params)
+    return [
+        {"name": str(column[0]), "type": str(column[1])} for column in connection.description
+    ]
 
 
 def _import_budget(destination: Path) -> int:
@@ -186,11 +200,7 @@ def import_corpus_snapshot(source: Path, db_path: Path) -> dict[str, object]:
             with database(staged) as connection:
                 connection.execute("BEGIN TRANSACTION")
                 for name in CORPUS_TABLES:
-                    connection.execute(f"{_portable_select(name)} LIMIT 0")
-                    expected = [
-                        {"name": str(column[0]), "type": str(column[1])}
-                        for column in connection.description
-                    ]
+                    expected = _query_schema(connection, f"{_portable_select(name)} LIMIT 0")
                     metadata = manifest["tables"][name]
                     if sorted(metadata["schema"], key=lambda column: column["name"]) != sorted(
                         expected, key=lambda column: column["name"]
@@ -222,14 +232,6 @@ def import_corpus_snapshot(source: Path, db_path: Path) -> dict[str, object]:
         "total_rows": manifest["total_rows"],
         "raw_archive_included": False,
     }
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _portable_select(table_name: str) -> str:
@@ -279,17 +281,15 @@ def export_corpus_snapshot(
             if row is None:
                 raise RuntimeError(f"impossibile verificare {table_name}")
             row_count = int(row[0])
-            connection.execute("SELECT * FROM read_parquet(?) LIMIT 0", [str(file_path)])
-            schema = [
-                {"name": str(column[0]), "type": str(column[1])}
-                for column in connection.description
-            ]
+            schema = _query_schema(
+                connection, "SELECT * FROM read_parquet(?) LIMIT 0", [str(file_path)]
+            )
             total_rows += row_count
             tables[table_name] = {
                 "file": file_name,
                 "rows": row_count,
                 "bytes": file_path.stat().st_size,
-                "sha256": _sha256_file(file_path),
+                "sha256": file_sha256(file_path),
                 "schema": schema,
             }
 
@@ -393,7 +393,7 @@ def verify_corpus_snapshot(snapshot_dir: Path) -> dict[str, object]:
             if not isinstance(expected_bytes, int) or file_path.stat().st_size != expected_bytes:
                 size_mismatch.append(table_name)
                 continue
-            if _sha256_file(file_path) != value.get("sha256"):
+            if file_sha256(file_path) != value.get("sha256"):
                 checksum_mismatch.append(table_name)
                 continue
             row = verifier.execute(
@@ -404,10 +404,9 @@ def verify_corpus_snapshot(snapshot_dir: Path) -> dict[str, object]:
                 row_count_mismatch.append(table_name)
                 continue
             actual_total_rows += int(row[0])
-            verifier.execute("SELECT * FROM read_parquet(?) LIMIT 0", [str(file_path)])
-            actual_schema = [
-                {"name": str(column[0]), "type": str(column[1])} for column in verifier.description
-            ]
+            actual_schema = _query_schema(
+                verifier, "SELECT * FROM read_parquet(?) LIMIT 0", [str(file_path)]
+            )
             if actual_schema != value.get("schema"):
                 schema_mismatch.append(table_name)
                 continue

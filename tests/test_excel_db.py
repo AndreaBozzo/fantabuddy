@@ -159,3 +159,64 @@ def test_reads_single_sheet_league_export_with_explicit_season(tmp_path: Path) -
         latest = listone_summary(connection)
 
     assert latest[0]["snapshot_id"] == canonical.snapshot_id
+
+
+def test_legacy_auction_values_migrate_to_nullable_projections(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy-auction.duckdb"
+    legacy = duckdb.connect(str(db_path))
+    legacy.execute(
+        """
+        CREATE TABLE auction_values (
+          build_id VARCHAR NOT NULL,
+          fantacalcio_id INTEGER NOT NULL,
+          name VARCHAR NOT NULL,
+          team VARCHAR NOT NULL,
+          role VARCHAR NOT NULL,
+          status VARCHAR NOT NULL,
+          official_quote INTEGER NOT NULL,
+          official_fvm INTEGER NOT NULL,
+          baseline_score DOUBLE NOT NULL,
+          ml_score DOUBLE,
+          projected_score DOUBLE NOT NULL,
+          suggested_credits INTEGER NOT NULL,
+          rosterable BOOLEAN NOT NULL,
+          tier VARCHAR NOT NULL,
+          reliability INTEGER NOT NULL,
+          expected_start_share DOUBLE NOT NULL DEFAULT 0,
+          expected_minutes DOUBLE NOT NULL DEFAULT 0,
+          expected_goals DOUBLE NOT NULL DEFAULT 0,
+          expected_assists DOUBLE NOT NULL DEFAULT 0,
+          expected_cards DOUBLE NOT NULL DEFAULT 0,
+          expected_rating DOUBLE NOT NULL DEFAULT 0,
+          explanation VARCHAR NOT NULL,
+          PRIMARY KEY (build_id, fantacalcio_id)
+        )
+        """
+    )
+    legacy.close()
+
+    with database(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO auction_values (
+              build_id, fantacalcio_id, name, team, role, status,
+              official_quote, official_fvm, baseline_score, ml_score,
+              projected_score, suggested_credits, rosterable, tier,
+              reliability, expected_start_share, expected_minutes,
+              expected_goals, expected_assists, expected_cards,
+              expected_rating, explanation
+            ) VALUES (
+              'b1', 1, 'Solo Listone', 'NAP', 'C', 'active',
+              15, 80, 70.0, NULL, 70.0, 20, true, 'B', 50,
+              NULL, NULL, NULL, NULL, NULL, NULL, 'listone only'
+            )
+            """
+        )
+        row = connection.execute(
+            """
+            SELECT expected_start_share, expected_minutes, expected_goals,
+                   expected_assists, expected_cards, expected_rating
+            FROM auction_values WHERE build_id = 'b1'
+            """
+        ).fetchone()
+    assert row == (None, None, None, None, None, None)
